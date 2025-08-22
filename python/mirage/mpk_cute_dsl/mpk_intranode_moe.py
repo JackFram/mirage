@@ -19,8 +19,8 @@ import comm
 from cuda_utils import checkCudaErrors
 from moe_utils import MoEParam
 from dist_utils import ProcessGroupInfo, parallel_launch
-from kernel.sm100_intra_moe import IntraMoEKernel
-from kernel.sm100_grouped_gemm import GroupedGemmKernel
+from kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
+from profiler.dsl_profiler import export_to_perfetto_trace
 
 def test_loop(dist_param: ProcessGroupInfo):
 
@@ -56,9 +56,10 @@ def test_loop(dist_param: ProcessGroupInfo):
     gate_scores = torch.randn((num_tokens_per_rank, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_indices = torch.topk(gate_scores, num_topk, dim=-1, largest=True, sorted=False)[1].to(torch.int32)
     topk_weights = torch.randn((num_tokens_per_rank, num_topk), dtype=torch.float32, device='cuda')
+    
+    # Meta Info tensors    
     local_token_send_count_per_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     rank_token_count = torch.zeros((1), dtype=torch.int32, device='cuda')
-    # Meta Info tensors
     num_token_per_rank = torch.zeros((num_local_experts * num_ranks, 1), dtype=torch.int32, device='cuda')
     max_token_per_rank = num_local_experts * num_tokens
     src_index = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
@@ -66,12 +67,18 @@ def test_loop(dist_param: ProcessGroupInfo):
     src_offset = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
     src_rank = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
     src_token = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
-
-    # For grid Sync
-    global_sync_semaphore = torch.zeros((2, 1), dtype=torch.int32, device='cuda')
-    global_sync_semaphore_cute = from_dlpack(global_sync_semaphore, assumed_align=16)
-
     
+    # MPK task queue buffer
+    mpk_task_queue = torch.zeros((1024, 1), dtype=torch.int32, device='cuda')
+    mpk_task_consume_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
+    mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
+    mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')
+    
+    # Profiler tensor
+    profiler_buffer_size = 148 * 9 * 128
+    profiler_buffer = torch.zeros((profiler_buffer_size, 1), dtype=torch.uint64, device='cuda')
+    profiler_ptr = torch.zeros((1), dtype=torch.uint32, device='cuda')
+
     '''
     dispatch
     '''
@@ -100,6 +107,7 @@ def test_loop(dist_param: ProcessGroupInfo):
         dtype=torch_dtype(moe_param.out_dtype),
     ).cuda()
 
+    # Initialize output tensors
     output_tensor = torch.empty(
         (num_tokens_per_rank, hidden_dim),
         dtype=torch_dtype(moe_param.out_dtype),
@@ -125,10 +133,20 @@ def test_loop(dist_param: ProcessGroupInfo):
     w1_tensor_cute = from_dlpack(w1_tensor, assumed_align=16)
     w2_tensor_cute = from_dlpack(w2_tensor, assumed_align=16)
     w3_tensor_cute = from_dlpack(w3_tensor, assumed_align=16)
+    
+    mpk_task_queue_cute = from_dlpack(mpk_task_queue, assumed_align=16)
+    mpk_task_consume_idx_cute = from_dlpack(mpk_task_consume_idx, assumed_align=16)
+    mpk_task_produce_idx_cute = from_dlpack(mpk_task_produce_idx, assumed_align=16)
+    mpk_task_barrier_cute = from_dlpack(mpk_task_barrier, assumed_align=16)
+    
+    profiler_buffer_cute = from_dlpack(profiler_buffer, assumed_align=16)
+    profiler_ptr_cute = from_dlpack(profiler_ptr, assumed_align=16)
 
-    intra_moe_kernel = IntraMoEKernel(
+    intra_moe_kernel = SM100MPKIntraMoEKernel(
         moe_param=moe_param,
         dist_param=dist_param,
+        profiler_buffer_size=profiler_buffer_size,
+        profiler_enabled=True,
     )
 
     buffer_size_in_bytes = intra_moe_kernel.buffer_size_in_bytes
@@ -176,7 +194,12 @@ def test_loop(dist_param: ProcessGroupInfo):
         src_offset_cute,
         src_rank_cute,
         src_token_cute,
-        global_sync_semaphore_cute,
+        mpk_task_queue_cute,
+        mpk_task_consume_idx_cute,
+        mpk_task_produce_idx_cute,
+        mpk_task_barrier_cute,
+        profiler_buffer_cute,
+        profiler_ptr_cute,
         current_stream,
     )
 
@@ -206,11 +229,24 @@ def test_loop(dist_param: ProcessGroupInfo):
         src_offset_cute,
         src_rank_cute,
         src_token_cute,
-        global_sync_semaphore_cute,
+        mpk_task_queue_cute,
+        mpk_task_consume_idx_cute,
+        mpk_task_produce_idx_cute,
+        mpk_task_barrier_cute,
+        profiler_buffer_cute,
+        profiler_ptr_cute,
         current_stream,
     )
 
-    # torch.cuda.synchronize()
+    torch.cuda.synchronize()
+
+    profiler_file_name = f"results/mpk_intranode_moe_rank_{rank}.perfetto-trace"
+    export_to_perfetto_trace(
+        profiler_buffer,
+        profiler_file_name,
+        num_sm=intra_moe_kernel.num_workers,
+        num_warps=intra_moe_kernel.num_warp,
+    )
 
     # print("rank{}: Dispatch completed".format(rank))
     # print("rank{}: num_tokens_per_local_expert_recv: {}".format(rank, num_tokens_per_local_expert_recv))
