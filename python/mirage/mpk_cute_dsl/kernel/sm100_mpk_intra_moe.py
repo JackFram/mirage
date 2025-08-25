@@ -157,7 +157,7 @@ class SM100MPKIntraMoEKernel:
         remote_buffer_ptr: cute.Tensor,
         count_buffer_ptr: cute.Tensor,
         # meta info tensors
-        num_token_per_rank: cute.Tensor,
+        recv_num_token_per_rank: cute.Tensor,
         src_index: cute.Tensor, 
         src_expert: cute.Tensor,
         src_offset: cute.Tensor,
@@ -252,7 +252,7 @@ class SM100MPKIntraMoEKernel:
             local_buffer_ptr=local_buffer_ptr,
             remote_buffer_ptr=remote_buffer_ptr,
             count_buffer_ptr=count_buffer_ptr,
-            num_token_per_rank=num_token_per_rank,
+            recv_num_token_per_rank=recv_num_token_per_rank,
             src_index=src_index,
             src_expert=src_expert,
             src_offset=src_offset,
@@ -292,7 +292,7 @@ class SM100MPKIntraMoEKernel:
         remote_buffer_ptr: cute.Tensor,
         count_buffer_ptr: cute.Tensor,
         # meta info tensors
-        num_token_per_rank: cute.Tensor,
+        recv_num_token_per_rank: cute.Tensor,
         src_index: cute.Tensor,
         src_expert: cute.Tensor,
         src_offset: cute.Tensor,
@@ -339,22 +339,21 @@ class SM100MPKIntraMoEKernel:
             task_sync_buffer=mpk_task_sync_buffer,
             profiler=profiler,
         )
-        
-        # init kernel with starter tasks
-        if block_idx == 0:
-            scheduler.add_task(0x10000000) # hist + all2all tasks
-            for i in range(self.num_tokens_per_rank):
-                scheduler.add_task(0x20000000 | i) # dispatch send tasks (1 task per token)
-            for i in range(1024 - 1 - self.num_tokens_per_rank):
-                scheduler.add_task(0x60000000) # terminate tasks
+           
+        # mega-kernel debug    
+        scheduler.fetch_next_task()
+        # if thread_idx % 32 == 0:
+        #     cute.printf("block-{}, warp-{}, thread-{}", block_idx, warp_idx, thread_idx)
+        scheduler.sync_task()
+        scheduler.execute_task()
 
-        # mega-kernel starts
-        test_num_work = 1
-        while(test_num_work > 0):
-            scheduler.fetch_next_task()
-            scheduler.sync_task()
-            scheduler.execute_task()
-            test_num_work -= 1
+        # # mega-kernel starts
+        # test_num_work = 1
+        # while(test_num_work > 0):
+        #     scheduler.fetch_next_task()
+        #     scheduler.sync_task()
+        #     scheduler.execute_task()
+        #     test_num_work -= 1
 
     @cute.jit
     def dispatch_device(
@@ -371,7 +370,7 @@ class SM100MPKIntraMoEKernel:
         local_buffer_ptr: cute.Tensor,
         remote_buffer_ptr: cute.Tensor,
         # meta info tensors
-        num_token_per_rank: cute.Tensor,
+        recv_num_token_per_rank: cute.Tensor,
         src_index: cute.Tensor,
         src_expert: cute.Tensor,
         src_offset: cute.Tensor,
@@ -464,7 +463,7 @@ class SM100MPKIntraMoEKernel:
                 inline_ptx.st_flag_release(count_tensor, cutlass.Int32(0))  # reset the flag to 0
                 token_count -= 1
 
-                num_token_per_rank[recv_group_idx] = token_count
+                recv_num_token_per_rank[recv_group_idx] = token_count
 
                 self.block_expert_start_index[recv_group_idx] = inline_ptx.atomic_add(
                     num_tokens_per_local_expert_recv[local_expert_idx, None],
@@ -478,7 +477,7 @@ class SM100MPKIntraMoEKernel:
 
             cute.arch.sync_threads()
 
-            token_count = num_token_per_rank[recv_group_idx]
+            token_count = recv_num_token_per_rank[recv_group_idx]
             expert_start = self.block_expert_start_index[recv_group_idx]
             token_start = self.block_token_start_index[recv_group_idx]
 

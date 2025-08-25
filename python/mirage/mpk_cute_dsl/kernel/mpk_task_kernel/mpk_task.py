@@ -37,7 +37,7 @@ class MPKScheduler:
             task_sync_buffer:cute.Tensor,
             profiler: DslProfiler,
         ):
-        self.task_code = None
+        self.task_desc = cutlass.Int32(0)
         self.scheduler_warp_idx = scheduler_warp_idx
         self.task_queue = task_queue
         self.task_consume_idx = task_consume_idx
@@ -84,24 +84,28 @@ class MPKScheduler:
     @cute.jit
     def fetch_next_task(self):
         # gmem -> register task load with atomic add
+        warp_idx = cute.arch.warp_idx()
+        warp_idx = cute.arch.make_warp_uniform(warp_idx)
         thread_idx, _, _ = cute.arch.thread_idx()
         # specialized scheduler warp 
-        if thread_idx == self.scheduler_warp_idx * 32:
-
+        if warp_idx == self.scheduler_warp_idx:
             self.profiler.profile_event(event_name="Fetch-Task", event_type="begin")
-            task_load_idx = inline_ptx.atomic_add(
-                self.task_consume_idx,
-                cutlass.Int32(1),
-            ) % cutlass.Int32(1024)
-            task_desc = inline_ptx.ld_flag_volatile(self.task_queue[task_load_idx, None])
-            # task_code = 0
-            # while(cutlass.dynamic_expr(task_code == 0)): 
-            #     # Wait task update if task_code == 0 (fetch)
-            #     # TODO(Zhihao): try ld.relax and also measure the overhead (might slow down works on other warps)
-            #     task_desc = inline_ptx.ld_flag_volatile(self.task_queue[task_load_idx, None])
-            #     task_code = task_desc >> 28
-            #     break
-            self.task_desc = task_desc
+            if thread_idx == self.scheduler_warp_idx * 32:
+
+                # self.profiler.profile_event(event_name="Fetch-Task", event_type="begin")
+                task_load_idx = inline_ptx.atomic_add(
+                    self.task_consume_idx,
+                    cutlass.Int32(1),
+                ) % cutlass.Int32(1024)
+                task_desc = inline_ptx.ld_flag_volatile(self.task_queue[task_load_idx, None])
+                # task_code = 0
+                # while(cutlass.dynamic_expr(task_code == 0)): 
+                #     # Wait task update if task_code == 0 (fetch)
+                #     # TODO(Zhihao): try ld.relax and also measure the overhead (might slow down works on other warps)
+                #     task_desc = inline_ptx.ld_flag_volatile(self.task_queue[task_load_idx, None])
+                #     task_code = task_desc >> 28
+                #     break
+                self.task_sync_buffer[0] = task_desc
             self.profiler.profile_event(event_name="Fetch-Task", event_type="end")
 
     @cute.jit
@@ -122,13 +126,10 @@ class MPKScheduler:
         # register -> smem task store from scheduler warp
         # smem -> register task load from worker warp
         thread_idx, _, _ = cute.arch.thread_idx()
-        if thread_idx == self.scheduler_warp_idx * 32:
-            self.profiler.profile_event(event_name="Sync-Task", event_type="begin")
-            # self.task_sync_buffer[0] = self.task_desc
+        self.profiler.profile_event(event_name="Sync-Task", event_type="begin")
         cute.arch.sync_threads()
         self.task_desc = self.task_sync_buffer[0]
-        if thread_idx == self.scheduler_warp_idx * 32:
-            self.profiler.profile_event(event_name="Sync-Task", event_type="end")
+        self.profiler.profile_event(event_name="Sync-Task", event_type="end")
         
     @cute.jit
     def execute_task(self):

@@ -60,7 +60,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     # Meta Info tensors    
     local_token_send_count_per_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     rank_token_count = torch.zeros((1), dtype=torch.int32, device='cuda')
-    num_token_per_rank = torch.zeros((num_local_experts * num_ranks, 1), dtype=torch.int32, device='cuda')
+    recv_num_token_per_rank = torch.zeros((num_local_experts * num_ranks, 1), dtype=torch.int32, device='cuda')
     max_token_per_rank = num_local_experts * num_tokens
     src_index = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
     src_expert = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
@@ -74,6 +74,11 @@ def test_loop(dist_param: ProcessGroupInfo):
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')
     
+    # MPK task init
+    mpk_task_queue[0][0] = 0x10000000 # HistAll2All
+    for i in range(num_tokens_per_rank):
+        mpk_task_queue[i + 1][0] = (0x20000000 | i) # Dispatch-Send
+
     # Profiler tensor
     profiler_buffer_size = 148 * 9 * 128
     profiler_buffer = torch.zeros((profiler_buffer_size, 1), dtype=torch.uint64, device='cuda')
@@ -123,7 +128,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     local_token_send_count_per_expert_cute = from_dlpack(local_token_send_count_per_expert, assumed_align=16)
     rank_token_count_cute = from_dlpack(rank_token_count, assumed_align=16)
 
-    num_token_per_rank_cute = from_dlpack(num_token_per_rank, assumed_align=16)
+    recv_num_token_per_rank_cute = from_dlpack(recv_num_token_per_rank, assumed_align=16)
     src_index_cute = from_dlpack(src_index, assumed_align=16)
     src_expert_cute = from_dlpack(src_expert, assumed_align=16)
     src_offset_cute = from_dlpack(src_offset, assumed_align=16)
@@ -188,7 +193,7 @@ def test_loop(dist_param: ProcessGroupInfo):
         local_buffer_ptr_cute,
         remote_buffer_ptr_cute,
         count_buffer_ptr_cute,
-        num_token_per_rank_cute,
+        recv_num_token_per_rank_cute,
         src_index_cute,
         src_expert_cute,
         src_offset_cute,
@@ -223,7 +228,7 @@ def test_loop(dist_param: ProcessGroupInfo):
         local_buffer_ptr_cute,
         remote_buffer_ptr_cute,
         count_buffer_ptr_cute,
-        num_token_per_rank_cute,
+        recv_num_token_per_rank_cute,
         src_index_cute,
         src_expert_cute,
         src_offset_cute,

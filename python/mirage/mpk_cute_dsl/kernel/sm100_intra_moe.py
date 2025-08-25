@@ -145,7 +145,7 @@ class IntraMoEKernel:
         remote_buffer_ptr: cute.Tensor,
         count_buffer_ptr: cute.Tensor,
         # meta info tensors
-        num_token_per_rank: cute.Tensor,
+        recv_num_token_per_rank: cute.Tensor,
         src_index: cute.Tensor, 
         src_expert: cute.Tensor,
         src_offset: cute.Tensor,
@@ -212,7 +212,7 @@ class IntraMoEKernel:
             local_buffer_ptr=local_buffer_ptr,
             remote_buffer_ptr=remote_buffer_ptr,
             count_buffer_ptr=count_buffer_ptr,
-            num_token_per_rank=num_token_per_rank,
+            recv_num_token_per_rank=recv_num_token_per_rank,
             src_index=src_index,
             src_expert=src_expert,
             src_offset=src_offset,
@@ -246,7 +246,7 @@ class IntraMoEKernel:
         remote_buffer_ptr: cute.Tensor,
         count_buffer_ptr: cute.Tensor,
         # meta info tensors
-        num_token_per_rank: cute.Tensor,
+        recv_num_token_per_rank: cute.Tensor,
         src_index: cute.Tensor,
         src_expert: cute.Tensor,
         src_offset: cute.Tensor,
@@ -290,7 +290,7 @@ class IntraMoEKernel:
             dispatch_recv_token_tensor=dispatch_recv_token_tensor,
             local_buffer_ptr=local_buffer_ptr,
             remote_buffer_ptr=remote_buffer_ptr,
-            num_token_per_rank=num_token_per_rank,
+            recv_num_token_per_rank=recv_num_token_per_rank,
             src_index=src_index,
             src_expert=src_expert,
             src_offset=src_offset,
@@ -313,7 +313,7 @@ class IntraMoEKernel:
         local_buffer_ptr: cute.Tensor,
         remote_buffer_ptr: cute.Tensor,
         # meta info tensors
-        num_token_per_rank: cute.Tensor,
+        recv_num_token_per_rank: cute.Tensor,
         src_index: cute.Tensor,
         src_expert: cute.Tensor,
         src_offset: cute.Tensor,
@@ -406,7 +406,7 @@ class IntraMoEKernel:
                 inline_ptx.st_flag_release(count_tensor, cutlass.Int32(0))  # reset the flag to 0
                 token_count -= 1
 
-                num_token_per_rank[recv_group_idx] = token_count
+                recv_num_token_per_rank[recv_group_idx] = token_count
 
                 self.block_expert_start_index[recv_group_idx] = inline_ptx.atomic_add(
                     num_tokens_per_local_expert_recv[local_expert_idx, None],
@@ -420,7 +420,7 @@ class IntraMoEKernel:
 
             cute.arch.sync_threads()
 
-            token_count = num_token_per_rank[recv_group_idx]
+            token_count = recv_num_token_per_rank[recv_group_idx]
             expert_start = self.block_expert_start_index[recv_group_idx]
             token_start = self.block_token_start_index[recv_group_idx]
 

@@ -59,7 +59,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     local_token_send_count_per_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     rank_token_count = torch.zeros((1), dtype=torch.int32, device='cuda')
     # Meta Info tensors
-    num_token_per_rank = torch.zeros((num_local_experts * num_ranks, 1), dtype=torch.int32, device='cuda')
+    recv_num_token_per_rank = torch.zeros((num_local_experts * num_ranks, 1), dtype=torch.int32, device='cuda')
     max_token_per_rank = num_local_experts * num_tokens
     src_index = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
     src_expert = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
@@ -115,7 +115,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     local_token_send_count_per_expert_cute = from_dlpack(local_token_send_count_per_expert, assumed_align=16)
     rank_token_count_cute = from_dlpack(rank_token_count, assumed_align=16)
 
-    num_token_per_rank_cute = from_dlpack(num_token_per_rank, assumed_align=16)
+    recv_num_token_per_rank_cute = from_dlpack(recv_num_token_per_rank, assumed_align=16)
     src_index_cute = from_dlpack(src_index, assumed_align=16)
     src_expert_cute = from_dlpack(src_expert, assumed_align=16)
     src_offset_cute = from_dlpack(src_offset, assumed_align=16)
@@ -170,7 +170,7 @@ def test_loop(dist_param: ProcessGroupInfo):
         local_buffer_ptr_cute,
         remote_buffer_ptr_cute,
         count_buffer_ptr_cute,
-        num_token_per_rank_cute,
+        recv_num_token_per_rank_cute,
         src_index_cute,
         src_expert_cute,
         src_offset_cute,
@@ -200,7 +200,7 @@ def test_loop(dist_param: ProcessGroupInfo):
         local_buffer_ptr_cute,
         remote_buffer_ptr_cute,
         count_buffer_ptr_cute,
-        num_token_per_rank_cute,
+        recv_num_token_per_rank_cute,
         src_index_cute,
         src_expert_cute,
         src_offset_cute,
