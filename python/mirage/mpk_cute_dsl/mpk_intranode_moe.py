@@ -21,6 +21,7 @@ from moe_utils import MoEParam
 from dist_utils import ProcessGroupInfo, parallel_launch
 from kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
 from profiler.dsl_profiler import export_to_perfetto_trace
+from mpk_cute_dsl.param import MoEKernelParam
 
 def test_loop(dist_param: ProcessGroupInfo):
 
@@ -74,10 +75,15 @@ def test_loop(dist_param: ProcessGroupInfo):
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')
     
-    # MPK task init
-    mpk_task_queue[0][0] = 0x10000000 # HistAll2All
+    # MPK task initialization
+    # mpk_task_queue[0][0] = 0x10000000 # HistAll2All
+    task_idx = 0
     for i in range(num_tokens_per_rank):
-        mpk_task_queue[i + 1][0] = (0x20000000 | i) # Dispatch-Send
+        mpk_task_queue[task_idx][0] = (0x20000000 | i) # Dispatch-Send
+        task_idx += 1
+    for i in range(num_local_experts * num_ranks):
+        mpk_task_queue[task_idx][0] = (0x30000000 | i) # Dispatch-Recv
+        task_idx += 1
 
     # Profiler tensor
     profiler_buffer_size = 148 * 9 * 128
@@ -179,26 +185,31 @@ def test_loop(dist_param: ProcessGroupInfo):
     torch_stream = torch.cuda.current_stream()
     # Get the raw stream pointer as a CUstream
     current_stream = cuda.CUstream(torch_stream.cuda_stream)
+
+    # setup kernel param
+    kernel_param = MoEKernelParam(
+            rank_input_tensor=input_tensor_cute,
+            rank_input_topk_indices=topk_indices_cute,
+            num_tokens_per_local_expert_recv=num_tokens_per_local_expert_recv_cute,
+            local_token_send_count_per_expert=local_token_send_count_per_expert_cute,
+            rank_token_count=rank_token_count_cute,
+            dispatch_recv_token_tensor=dispatch_recv_token_tensor_cute,
+            combine_send_token_tensor=combine_send_token_tensor_cute,
+            output_tensor=output_tensor_cute,
+            local_buffer_ptr=local_buffer_ptr_cute,
+            remote_buffer_ptr=remote_buffer_ptr_cute,
+            count_buffer_ptr=count_buffer_ptr_cute,
+            recv_num_token_per_rank=recv_num_token_per_rank_cute,
+            src_index=src_index_cute,
+            src_expert=src_expert_cute,
+            src_offset=src_offset_cute,
+            src_rank=src_rank_cute,
+            src_token=src_token_cute,
+        )
     
     intra_moe_kernel_compiled = cute.compile(
         intra_moe_kernel,
-        input_tensor_cute,
-        topk_indices_cute,
-        num_tokens_per_local_expert_recv_cute,
-        local_token_send_count_per_expert_cute,
-        rank_token_count_cute,
-        dispatch_recv_token_tensor_cute,
-        combine_send_token_tensor_cute,
-        output_tensor_cute,
-        local_buffer_ptr_cute,
-        remote_buffer_ptr_cute,
-        count_buffer_ptr_cute,
-        recv_num_token_per_rank_cute,
-        src_index_cute,
-        src_expert_cute,
-        src_offset_cute,
-        src_rank_cute,
-        src_token_cute,
+        kernel_param,
         mpk_task_queue_cute,
         mpk_task_consume_idx_cute,
         mpk_task_produce_idx_cute,
@@ -217,23 +228,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     # - dispatch_recv_token_tensor: [num_local_experts, num_tokens, 1, hidden_dim]
 
     intra_moe_kernel_compiled(
-        input_tensor_cute,
-        topk_indices_cute,
-        num_tokens_per_local_expert_recv_cute,
-        local_token_send_count_per_expert_cute,
-        rank_token_count_cute,
-        dispatch_recv_token_tensor_cute,
-        combine_send_token_tensor_cute,
-        output_tensor_cute,
-        local_buffer_ptr_cute,
-        remote_buffer_ptr_cute,
-        count_buffer_ptr_cute,
-        recv_num_token_per_rank_cute,
-        src_index_cute,
-        src_expert_cute,
-        src_offset_cute,
-        src_rank_cute,
-        src_token_cute,
+        kernel_param,
         mpk_task_queue_cute,
         mpk_task_consume_idx_cute,
         mpk_task_produce_idx_cute,

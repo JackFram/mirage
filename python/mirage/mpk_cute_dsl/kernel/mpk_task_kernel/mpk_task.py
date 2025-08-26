@@ -10,6 +10,7 @@ from mpk_cute_dsl.kernel.mpk_task_kernel import *
 
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
+from mpk_cute_dsl.param import MoEKernelParam
 
 from enum import Enum
 
@@ -22,6 +23,10 @@ class MPKTask(Enum):
     kCombineRecv: cutlass.Uint32 = 5
     kTerminate: cutlass.Uint32 = 6
 
+# TODO(Zhihao): add task desc structure
+# | 31 - 28 | 27 - 16 | 15 - 0 |
+# |  task   |  param  | token id|
+
 class MPKScheduler:
     def __init__(
             self, 
@@ -31,6 +36,7 @@ class MPKScheduler:
             task_produce_idx:cute.Tensor, 
             task_barrier:cute.Tensor,
             task_sync_buffer:cute.Tensor,
+            kernel_param:MoEKernelParam,
             profiler: DslProfiler,
         ):
         self.task_desc = cutlass.Uint32(0)
@@ -40,6 +46,7 @@ class MPKScheduler:
         self.task_produce_idx = task_produce_idx
         self.task_barrier = task_barrier
         self.task_sync_buffer = task_sync_buffer
+        self.kernel_param = kernel_param
         self.profiler = profiler
         
     def __extract_mlir_values__(self):
@@ -74,6 +81,7 @@ class MPKScheduler:
             new_task_produce_idx,
             new_task_barrier,
             new_task_sync_buffer,
+            self.kernel_param,
             self.profiler,
         )
 

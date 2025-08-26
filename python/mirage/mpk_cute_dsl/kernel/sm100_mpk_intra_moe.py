@@ -22,6 +22,7 @@ import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKScheduler
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
+from mpk_cute_dsl.param import MoEKernelParam
 
 """
 A persistent MoE kernel (dispatch+FFN+combine) with cute DSL on blackwell (SM100).
@@ -142,27 +143,7 @@ class SM100MPKIntraMoEKernel:
     @cute.jit
     def __call__(
         self,
-        # input tensors
-        rank_input_tensor: cute.Tensor,
-        rank_input_topk_indices: cute.Tensor,
-        # output tensor
-        num_tokens_per_local_expert_recv: cute.Tensor,
-        local_token_send_count_per_expert: cute.Tensor,
-        rank_token_count: cute.Tensor,
-        dispatch_recv_token_tensor: cute.Tensor,
-        combine_send_token_tensor: cute.Tensor,
-        output_tensor: cute.Tensor,
-        # buffer ptr
-        local_buffer_ptr: cute.Tensor,
-        remote_buffer_ptr: cute.Tensor,
-        count_buffer_ptr: cute.Tensor,
-        # meta info tensors
-        recv_num_token_per_rank: cute.Tensor,
-        src_index: cute.Tensor, 
-        src_expert: cute.Tensor,
-        src_offset: cute.Tensor,
-        src_rank: cute.Tensor,
-        src_token: cute.Tensor,
+        kernel_param: MoEKernelParam,
         # mpk meta
         mpk_task_queue: cute.Tensor,
         mpk_task_consume_idx: cute.Tensor,
@@ -210,23 +191,7 @@ class SM100MPKIntraMoEKernel:
         self._setup_attributes()
         
         self.kernel(
-            rank_input_tensor=rank_input_tensor,
-            rank_input_topk_indices=rank_input_topk_indices,
-            num_tokens_per_local_expert_recv=num_tokens_per_local_expert_recv,
-            local_token_send_count_per_expert=local_token_send_count_per_expert,
-            rank_token_count=rank_token_count,
-            dispatch_recv_token_tensor=dispatch_recv_token_tensor,
-            combine_send_token_tensor=combine_send_token_tensor,
-            output_tensor=output_tensor,
-            local_buffer_ptr=local_buffer_ptr,
-            remote_buffer_ptr=remote_buffer_ptr,
-            count_buffer_ptr=count_buffer_ptr,
-            recv_num_token_per_rank=recv_num_token_per_rank,
-            src_index=src_index,
-            src_expert=src_expert,
-            src_offset=src_offset,
-            src_rank=src_rank,
-            src_token=src_token,
+            kernel_param=kernel_param,
             # mpk meta
             mpk_task_queue=mpk_task_queue,
             mpk_task_consume_idx=mpk_task_consume_idx,
@@ -246,27 +211,7 @@ class SM100MPKIntraMoEKernel:
     @cute.kernel
     def kernel(
         self,
-        # input tensors
-        rank_input_tensor: cute.Tensor,
-        rank_input_topk_indices: cute.Tensor,
-        # output tensor
-        num_tokens_per_local_expert_recv: cute.Tensor,
-        local_token_send_count_per_expert: cute.Tensor,
-        rank_token_count: cute.Tensor,
-        dispatch_recv_token_tensor: cute.Tensor,
-        combine_send_token_tensor: cute.Tensor,
-        output_tensor: cute.Tensor,
-        # buffer ptr
-        local_buffer_ptr: cute.Tensor,
-        remote_buffer_ptr: cute.Tensor,
-        count_buffer_ptr: cute.Tensor,
-        # meta info tensors
-        recv_num_token_per_rank: cute.Tensor,
-        src_index: cute.Tensor,
-        src_expert: cute.Tensor,
-        src_offset: cute.Tensor,
-        src_rank: cute.Tensor,
-        src_token: cute.Tensor,
+        kernel_param: MoEKernelParam,
         # mpk meta
         mpk_task_queue: cute.Tensor,
         mpk_task_consume_idx: cute.Tensor,
@@ -306,6 +251,7 @@ class SM100MPKIntraMoEKernel:
             task_produce_idx=mpk_task_produce_idx,
             task_barrier=mpk_task_barrier,
             task_sync_buffer=mpk_task_sync_buffer,
+            kernel_param=kernel_param,
             profiler=profiler,
         )
            

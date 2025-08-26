@@ -2,6 +2,7 @@ import cutlass.cute as cute
 import cutlass
 from mpk_cute_dsl.kernel.mpk_task_kernel.undefined_task import UndefinedTask
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
+import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
 from cutlass.cutlass_dsl import (
     new_from_mlir_values,
@@ -27,5 +28,11 @@ class DispatchRecvTask:
 
     @cute.jit
     def execute(self):
-        # Execute the dispatch receive task
-        pass
+        # Execute the dispatch send task
+        block_idx, _, _ = cute.arch.block_idx()
+        thread_idx, _, _ = cute.arch.thread_idx()
+        
+        self.profiler.profile_event(event_name="Dispatch-Recv", event_type="begin")
+        ### task implementation
+        inline_ptx.nanosleep(50*1000)
+        self.profiler.profile_event(event_name="Dispatch-Recv", event_type="end")

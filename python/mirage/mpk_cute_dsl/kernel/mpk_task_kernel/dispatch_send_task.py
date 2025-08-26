@@ -31,6 +31,8 @@ class DispatchSendTask:
         # Execute the dispatch send task
         block_idx, _, _ = cute.arch.block_idx()
         thread_idx, _, _ = cute.arch.thread_idx()
+
+        token_idx = self.task_desc & cutlass.Uint32(0x0000FFFF)
         
         self.profiler.profile_event(event_name="Dispatch-Send", event_type="begin")
         ### task implementation
