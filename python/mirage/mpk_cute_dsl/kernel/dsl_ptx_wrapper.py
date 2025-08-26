@@ -105,7 +105,7 @@ def nanosleep(time: Uint32, *, loc=None, ip=None) -> None:
     llvm.inline_asm(
         None,
         [Uint32(time).ir_value(loc=loc, ip=ip)],
-        "nanosleep.u32 t;",
+        "nanosleep.u32 $0;",
         "r",
         has_side_effects=True,
         is_align_stack=False,

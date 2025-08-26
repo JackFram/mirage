@@ -69,7 +69,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     src_token = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
     
     # MPK task queue buffer
-    mpk_task_queue = torch.zeros((1024, 1), dtype=torch.int32, device='cuda')
+    mpk_task_queue = torch.zeros((1024, 1), dtype=torch.uint32, device='cuda')
     mpk_task_consume_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')

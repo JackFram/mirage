@@ -6,11 +6,7 @@ from cutlass.cutlass_dsl import (
 )
 from cutlass._mlir import ir
 
-from mpk_cute_dsl.kernel.mpk_task_kernel.hist_a2a_task import HistAll2AllTask
-from mpk_cute_dsl.kernel.mpk_task_kernel.dispatch_send_task import DispatchSendTask
-from mpk_cute_dsl.kernel.mpk_task_kernel.dispatch_recv_task import DispatchRecvTask
-from mpk_cute_dsl.kernel.mpk_task_kernel.combine_send_task import CombineSendTask
-from mpk_cute_dsl.kernel.mpk_task_kernel.combine_recv_task import CombineRecvTask
+from mpk_cute_dsl.kernel.mpk_task_kernel import *
 
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
@@ -18,18 +14,18 @@ from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from enum import Enum
 
 class MPKTask(Enum):
-    kFetch: cutlass.Int32 = 0
-    kHistAll2All: cutlass.Int32 = 1
-    kDispatchSend: cutlass.Int32 = 2
-    kDispatchRecv: cutlass.Int32 = 3
-    kCombineSend: cutlass.Int32 = 4
-    kCombineRecv: cutlass.Int32 = 5
-    kTerminate: cutlass.Int32 = 6
+    kFetch: cutlass.Uint32 = 0
+    kHistAll2All: cutlass.Uint32 = 1
+    kDispatchSend: cutlass.Uint32 = 2
+    kDispatchRecv: cutlass.Uint32 = 3
+    kCombineSend: cutlass.Uint32 = 4
+    kCombineRecv: cutlass.Uint32 = 5
+    kTerminate: cutlass.Uint32 = 6
 
 class MPKScheduler:
     def __init__(
             self, 
-            scheduler_warp_idx:cute.Int32, 
+            scheduler_warp_idx:cutlass.Constexpr[int], 
             task_queue:cute.Tensor, 
             task_consume_idx:cute.Tensor, 
             task_produce_idx:cute.Tensor, 
@@ -37,7 +33,7 @@ class MPKScheduler:
             task_sync_buffer:cute.Tensor,
             profiler: DslProfiler,
         ):
-        self.task_desc = cutlass.Int32(0)
+        self.task_desc = cutlass.Uint32(0)
         self.scheduler_warp_idx = scheduler_warp_idx
         self.task_queue = task_queue
         self.task_consume_idx = task_consume_idx
@@ -105,11 +101,12 @@ class MPKScheduler:
                 #     task_desc = inline_ptx.ld_flag_volatile(self.task_queue[task_load_idx, None])
                 #     task_code = task_desc >> 28
                 #     break
+                # register -> smem task store from scheduler warp
                 self.task_sync_buffer[0] = task_desc
             self.profiler.profile_event(event_name="Fetch-Task", event_type="end")
 
     @cute.jit
-    def add_task(self, task_desc: cutlass.Int32):
+    def add_task(self, task_desc: cutlass.Uint32):
         # register -> gmem task store with atomic add
         thread_idx, _, _ = cute.arch.thread_idx()
         if thread_idx == self.scheduler_warp_idx * 32:
@@ -123,12 +120,11 @@ class MPKScheduler:
 
     @cute.jit
     def sync_task(self):
-        # register -> smem task store from scheduler warp
         # smem -> register task load from worker warp
         thread_idx, _, _ = cute.arch.thread_idx()
         self.profiler.profile_event(event_name="Sync-Task", event_type="begin")
         cute.arch.sync_threads()
-        self.task_desc = self.task_sync_buffer[0]
+        self.task_desc = self.task_sync_buffer[0].to(cutlass.Uint32)
         self.profiler.profile_event(event_name="Sync-Task", event_type="end")
         
     @cute.jit
@@ -140,36 +136,31 @@ class MPKScheduler:
         
         block_idx, _, _ = cute.arch.block_idx()
         thread_idx, _, _ = cute.arch.thread_idx()
-        
-        task_code = self.task_desc >> 28
-        # For debug
-        if thread_idx == 0:
-            cute.printf("block-{} recv task: {}", block_idx, task_code)
-        return
-        # End debug
-        
-        # if task_code == MPKTask.kTerminate.value:
-        #     return
-        
+
+        task_code = (self.task_desc >> 28)
+
         # executing task with worker warps
         if warp_idx < self.scheduler_warp_idx:
-            task_runner = decode_task(task_code, self.task_desc, self.profiler)
-            task_runner.execute()
 
-@cute.jit
-def decode_task(task_code: cutlass.Int32, task_desc: cutlass.Int32, profiler: DslProfiler=None):
-    # task_id:4b|depend_flag:1b|sync_buffer_idx:3x4b|meta:15b
-    if task_code == MPKTask.kFetch.value:
-        raise ValueError("Task code 0 is reserved for fetch operations and should not be executed directly.")
-    elif task_code == MPKTask.kHistAll2All.value:
-        return HistAll2AllTask(task_desc, profiler)
-    elif task_code == MPKTask.kDispatchSend.value:
-        return DispatchSendTask(task_desc, profiler)
-    elif task_code == MPKTask.kDispatchRecv.value:
-        return DispatchRecvTask(task_desc, profiler)
-    elif task_code == MPKTask.kCombineSend.value:
-        return CombineSendTask(task_desc, profiler)
-    elif task_code == MPKTask.kCombineRecv.value:
-        return CombineRecvTask(task_desc, profiler)
-    else:
-        raise ValueError(f"Unknown task code: {task_code}")
+            if task_code == MPKTask.kFetch.value:
+                task_runner = FetchTask(self.task_desc, self.profiler)
+                task_runner.execute()
+            elif task_code == MPKTask.kHistAll2All.value:
+                task_runner = HistAll2AllTask(self.task_desc, self.profiler)
+                task_runner.execute()
+            elif task_code == MPKTask.kDispatchSend.value:
+                task_runner = DispatchSendTask(self.task_desc, self.profiler)
+                task_runner.execute()
+            elif task_code == MPKTask.kDispatchRecv.value:
+                task_runner = DispatchRecvTask(self.task_desc, self.profiler)
+                task_runner.execute()
+            elif task_code == MPKTask.kCombineSend.value:
+                task_runner = CombineSendTask(self.task_desc, self.profiler)
+                task_runner.execute()
+            elif task_code == MPKTask.kCombineRecv.value:
+                task_runner = CombineRecvTask(self.task_desc, self.profiler)
+                task_runner.execute()
+
+        is_final_task = (task_code == MPKTask.kTerminate.value)
+
+        return is_final_task

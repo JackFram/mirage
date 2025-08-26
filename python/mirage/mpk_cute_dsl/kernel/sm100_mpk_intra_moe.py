@@ -201,37 +201,6 @@ class SM100MPKIntraMoEKernel:
             mpk_task_sync_buffer: cute.struct.MemRange[
                 cutlass.Int32, 1
             ]
-            # tensormap_buffer: cute.struct.MemRange[
-            #     cutlass.Int64, self.size_tensormap_in_i64
-            # ]
-            # ab_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_ab_stage]
-            # ab_empty_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_ab_stage]
-            # acc_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_acc_stage]
-            # acc_empty_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_acc_stage]
-            # tmem_dealloc_mbar_ptr: cutlass.Int64
-            # tmem_holding_buf: cutlass.Int32
-            # # (EPI_TILE_M, EPI_TILE_N, STAGE)
-            # sC: cute.struct.Align[
-            #     cute.struct.MemRange[
-            #         self.c_dtype,
-            #         cute.cosize(self.epi_smem_layout_staged.outer),
-            #     ],
-            #     self.buffer_align_bytes,
-            # ]
-            # # (MMA, MMA_M, MMA_K, STAGE)
-            # sA: cute.struct.Align[
-            #     cute.struct.MemRange[
-            #         self.a_dtype, cute.cosize(self.a_smem_layout_staged.outer)
-            #     ],
-            #     self.buffer_align_bytes,
-            # ]
-            # # (MMA, MMA_N, MMA_K, STAGE)
-            # sB: cute.struct.Align[
-            #     cute.struct.MemRange[
-            #         self.b_dtype, cute.cosize(self.b_smem_layout_staged.outer)
-            #     ],
-            #     self.buffer_align_bytes,
-            # ]
         self.shared_storage = SharedStorage
         
         # You are here: finish impl
@@ -345,7 +314,7 @@ class SM100MPKIntraMoEKernel:
         # if thread_idx % 32 == 0:
         #     cute.printf("block-{}, warp-{}, thread-{}", block_idx, warp_idx, thread_idx)
         scheduler.sync_task()
-        scheduler.execute_task()
+        is_final_task = scheduler.execute_task()
 
         # # mega-kernel starts
         # test_num_work = 1
