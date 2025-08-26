@@ -1,19 +1,14 @@
-import functools
 from typing import List, Type, Union
 from inspect import isclass
 
-import math
 import torch
 import cuda.bindings.driver as cuda
-import torch.distributed as dist
 
 import cutlass
 import cutlass.cute as cute
 import cutlass.utils as utils
 from cutlass.cute.nvgpu import cpasync, tcgen05
 import cutlass.utils.blackwell_helpers as sm100_utils
-import cutlass.torch as cutlass_torch
-from cutlass.cute.runtime import from_dlpack
 from cutlass.torch import dtype as torch_dtype
 
 from mpk_cute_dsl.moe_utils import MoEParam
@@ -21,8 +16,10 @@ from mpk_cute_dsl.dist_utils import ProcessGroupInfo
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKScheduler
+from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
+from mpk_cute_dsl.const_param import ConstParam
 
 """
 A persistent MoE kernel (dispatch+FFN+combine) with cute DSL on blackwell (SM100).
@@ -138,7 +135,12 @@ class SM100MPKIntraMoEKernel:
         self.count_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16
         self.token_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16 + cutlass.cute.round_up(self.num_local_experts * 4, 16)
 
-        self.thr_tile_shape = (1, self.hidden_dim//self.threads_per_cta)
+        self.thr_tile_shape = (1, self.hidden_dim//(32 * self.num_worker_warp))
+        self.const_param = ConstParam(
+            num_topk=self.moe_param.num_topk,
+            num_worker_warps=self.num_worker_warp,
+            thr_tile_shape=self.thr_tile_shape,
+        )
     
     @cute.jit
     def __call__(
@@ -172,16 +174,6 @@ class SM100MPKIntraMoEKernel:
         grid_dim = [sm_count, 1, 1]
         block_dim = [self.threads_per_cta, 1, 1]
         smem_size = 196 * 1024
-
-        # Define shared storage for kernel
-        @cute.struct
-        class SharedStorage:
-            send_index_buffer: cute.struct.MemRange[
-                cutlass.Int32, 1
-            ]
-            mpk_task_sync_buffer: cute.struct.MemRange[
-                cutlass.Int32, 1
-            ]
         self.shared_storage = SharedStorage
         
         # You are here: finish impl
@@ -225,12 +217,9 @@ class SM100MPKIntraMoEKernel:
         smem = utils.SmemAllocator()
         storage = smem.allocate(self.shared_storage)
 
-        self.send_index_buffer = storage.send_index_buffer.get_tensor(
-            cute.make_layout((1), stride=(1))
-        )
-        mpk_task_sync_buffer = storage.mpk_task_sync_buffer.get_tensor(
-            cute.make_layout((1), stride=(1))
-        )
+        # self.send_index_buffer = storage.send_index_buffer.get_tensor(
+        #     cute.make_layout((1), stride=(1))
+        # )
         
         profiler = DslProfiler(
             profiler_buffer=profiler_buffer,
@@ -250,7 +239,8 @@ class SM100MPKIntraMoEKernel:
             task_consume_idx=mpk_task_consume_idx,
             task_produce_idx=mpk_task_produce_idx,
             task_barrier=mpk_task_barrier,
-            task_sync_buffer=mpk_task_sync_buffer,
+            smem_storage=storage,
+            const_param=self.const_param,
             kernel_param=kernel_param,
             profiler=profiler,
         )

@@ -11,6 +11,8 @@ from mpk_cute_dsl.kernel.mpk_task_kernel import *
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
+from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
+from mpk_cute_dsl.const_param import ConstParam
 
 from enum import Enum
 
@@ -30,13 +32,14 @@ class MPKTask(Enum):
 class MPKScheduler:
     def __init__(
             self, 
-            scheduler_warp_idx:cutlass.Constexpr[int], 
-            task_queue:cute.Tensor, 
-            task_consume_idx:cute.Tensor, 
-            task_produce_idx:cute.Tensor, 
-            task_barrier:cute.Tensor,
-            task_sync_buffer:cute.Tensor,
-            kernel_param:MoEKernelParam,
+            scheduler_warp_idx: cutlass.Constexpr[int], 
+            task_queue: cute.Tensor, 
+            task_consume_idx: cute.Tensor, 
+            task_produce_idx: cute.Tensor, 
+            task_barrier: cute.Tensor,
+            smem_storage: SharedStorage,
+            const_param: ConstParam,
+            kernel_param: MoEKernelParam,
             profiler: DslProfiler,
         ):
         self.task_desc = cutlass.Uint32(0)
@@ -45,20 +48,24 @@ class MPKScheduler:
         self.task_consume_idx = task_consume_idx
         self.task_produce_idx = task_produce_idx
         self.task_barrier = task_barrier
-        self.task_sync_buffer = task_sync_buffer
+        self.smem_storage = smem_storage
+        self.const_param = const_param
         self.kernel_param = kernel_param
         self.profiler = profiler
-        
+
+        self.task_sync_buffer = smem_storage.mpk_task_sync_buffer.get_tensor(
+            cute.make_layout((1), stride=(1))
+        )
+
     def __extract_mlir_values__(self):
         values = self.task_queue.__extract_mlir_values__()
         values.extend(self.task_consume_idx.__extract_mlir_values__())
         values.extend(self.task_produce_idx.__extract_mlir_values__())
         values.extend(self.task_barrier.__extract_mlir_values__())
-        values.extend(self.task_sync_buffer.__extract_mlir_values__())
         return values
 
     def __new_from_mlir_values__(self, values: list[ir.Value]) -> "MPKScheduler":
-        assert len(values) == 5
+        assert len(values) == 4
         new_task_queue = new_from_mlir_values(
             self.task_queue, [values[0]]
         )
@@ -71,16 +78,14 @@ class MPKScheduler:
         new_task_barrier = new_from_mlir_values(
             self.task_barrier, [values[3]]
         )
-        new_task_sync_buffer = new_from_mlir_values(
-            self.task_sync_buffer, [values[4]]
-        )
         return MPKScheduler(
             self.scheduler_warp_idx,
             new_task_queue,
             new_task_consume_idx,
             new_task_produce_idx,
             new_task_barrier,
-            new_task_sync_buffer,
+            self.smem_storage,
+            self.const_param,
             self.kernel_param,
             self.profiler,
         )
@@ -151,22 +156,22 @@ class MPKScheduler:
         if warp_idx < self.scheduler_warp_idx:
 
             if task_code == MPKTask.kFetch.value:
-                task_runner = FetchTask(self.task_desc, self.profiler)
+                task_runner = FetchTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kHistAll2All.value:
-                task_runner = HistAll2AllTask(self.task_desc, self.profiler)
+                task_runner = HistAll2AllTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kDispatchSend.value:
-                task_runner = DispatchSendTask(self.task_desc, self.profiler)
+                task_runner = DispatchSendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kDispatchRecv.value:
-                task_runner = DispatchRecvTask(self.task_desc, self.profiler)
+                task_runner = DispatchRecvTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kCombineSend.value:
-                task_runner = CombineSendTask(self.task_desc, self.profiler)
+                task_runner = CombineSendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kCombineRecv.value:
-                task_runner = CombineRecvTask(self.task_desc, self.profiler)
+                task_runner = CombineRecvTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
 
         is_final_task = (task_code == MPKTask.kTerminate.value)

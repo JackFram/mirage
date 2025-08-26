@@ -82,7 +82,7 @@ class DslProfiler:
             event_tag = ((block_idx & 0xFF) << 24 | (warp_idx & 0xF) << 20 | event_type_map[event_type].value << 18 | event_id)
             timestamp_tag = inline_ptx.get_globaltimer_lo()
             full_tag = (event_tag.to(cutlass.Uint64) << 32) | timestamp_tag.to(cutlass.Uint64)
-            # TODO(Zhihao): around 370 ns overhead here for the profiler.
+            # Caveats(Zhihao): around 370 ns overhead here for the profiler.
             insert_idx = inline_ptx.atomic_add(self.profiler_ptr, cutlass.Int32(1))
             inline_ptx.st_flag_volatile_64(
                 self.profiler_buffer[insert_idx, None],
