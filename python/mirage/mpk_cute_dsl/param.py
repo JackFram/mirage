@@ -17,6 +17,7 @@ class MoEKernelParam:
             # output tensor
             num_tokens_per_local_expert_recv: cute.Tensor,
             local_token_send_count_per_expert: cute.Tensor,
+            local_token_send_bar_expert: cute.Tensor,
             rank_token_count: cute.Tensor,
             dispatch_recv_token_tensor: cute.Tensor,
             combine_send_token_tensor: cute.Tensor,
@@ -37,6 +38,7 @@ class MoEKernelParam:
         self.rank_input_topk_indices = rank_input_topk_indices
         self.num_tokens_per_local_expert_recv = num_tokens_per_local_expert_recv
         self.local_token_send_count_per_expert = local_token_send_count_per_expert
+        self.local_token_send_bar_expert = local_token_send_bar_expert
         self.rank_token_count = rank_token_count
         self.dispatch_recv_token_tensor = dispatch_recv_token_tensor
         self.combine_send_token_tensor = combine_send_token_tensor
@@ -57,6 +59,7 @@ class MoEKernelParam:
         pointers.extend(get_c_pointers(self.rank_input_topk_indices))
         pointers.extend(get_c_pointers(self.num_tokens_per_local_expert_recv))  
         pointers.extend(get_c_pointers(self.local_token_send_count_per_expert))
+        pointers.extend(get_c_pointers(self.local_token_send_bar_expert))
         pointers.extend(get_c_pointers(self.rank_token_count))
         pointers.extend(get_c_pointers(self.dispatch_recv_token_tensor))
         pointers.extend(get_c_pointers(self.combine_send_token_tensor))
@@ -78,6 +81,7 @@ class MoEKernelParam:
         values.extend(extract_mlir_values(self.rank_input_topk_indices))
         values.extend(extract_mlir_values(self.num_tokens_per_local_expert_recv))
         values.extend(extract_mlir_values(self.local_token_send_count_per_expert))
+        values.extend(extract_mlir_values(self.local_token_send_bar_expert))
         values.extend(extract_mlir_values(self.rank_token_count))
         values.extend(extract_mlir_values(self.dispatch_recv_token_tensor))
         values.extend(extract_mlir_values(self.combine_send_token_tensor))
@@ -99,6 +103,7 @@ class MoEKernelParam:
         values.extend(get_mlir_types(self.rank_input_topk_indices))
         values.extend(get_mlir_types(self.num_tokens_per_local_expert_recv))
         values.extend(get_mlir_types(self.local_token_send_count_per_expert))
+        values.extend(get_mlir_types(self.local_token_send_bar_expert))
         values.extend(get_mlir_types(self.rank_token_count))
         values.extend(get_mlir_types(self.dispatch_recv_token_tensor))
         values.extend(get_mlir_types(self.combine_send_token_tensor))
@@ -115,63 +120,85 @@ class MoEKernelParam:
         return values
 
     def __new_from_mlir_values__(self, values: list[ir.Value]) -> "MoEKernelParam":
-        assert len(values) == 17
+        assert len(values) == 18
+        value_idx = 0
         new_rank_input_tensor = new_from_mlir_values(
-            self.rank_input_tensor, [values[0]]
+            self.rank_input_tensor, [values[value_idx]]
         )
+        value_idx += 1
         new_rank_input_topk_indices = new_from_mlir_values(
-            self.rank_input_topk_indices, [values[1]]
+            self.rank_input_topk_indices, [values[value_idx]]
         )
+        value_idx += 1
         new_num_tokens_per_local_expert_recv = new_from_mlir_values(
-            self.num_tokens_per_local_expert_recv, [values[2]]
+            self.num_tokens_per_local_expert_recv, [values[value_idx]]
         )
+        value_idx += 1
         new_local_token_send_count_per_expert = new_from_mlir_values(
-            self.local_token_send_count_per_expert, [values[3]]
+            self.local_token_send_count_per_expert, [values[value_idx]]
         )
+        value_idx += 1
+        new_local_token_send_bar_expert = new_from_mlir_values(
+            self.local_token_send_bar_expert, [values[value_idx]]
+        )
+        value_idx += 1
         new_rank_token_count = new_from_mlir_values(
-            self.rank_token_count, [values[4]]
+            self.rank_token_count, [values[value_idx]]
         )
+        value_idx += 1
         new_dispatch_recv_token_tensor = new_from_mlir_values(
-            self.dispatch_recv_token_tensor, [values[5]]
+            self.dispatch_recv_token_tensor, [values[value_idx]]
         )
+        value_idx += 1
         new_combine_send_token_tensor = new_from_mlir_values(
-            self.combine_send_token_tensor, [values[6]]
+            self.combine_send_token_tensor, [values[value_idx]]
         )
+        value_idx += 1
         new_output_tensor = new_from_mlir_values(
-            self.output_tensor, [values[7]]
+            self.output_tensor, [values[value_idx]]
         )
+        value_idx += 1
         new_local_buffer_ptr = new_from_mlir_values(
-            self.local_buffer_ptr, [values[8]]
+            self.local_buffer_ptr, [values[value_idx]]
         )
+        value_idx += 1
         new_remote_buffer_ptr = new_from_mlir_values(
-            self.remote_buffer_ptr, [values[9]]
+            self.remote_buffer_ptr, [values[value_idx]]
         )
+        value_idx += 1
         new_count_buffer_ptr = new_from_mlir_values(
-            self.count_buffer_ptr, [values[10]]
+            self.count_buffer_ptr, [values[value_idx]]
         )
+        value_idx += 1
         new_recv_num_token_per_rank = new_from_mlir_values(
-            self.recv_num_token_per_rank, [values[11]]
+            self.recv_num_token_per_rank, [values[value_idx]]
         )
+        value_idx += 1
         new_src_index = new_from_mlir_values(
-            self.src_index, [values[12]]
+            self.src_index, [values[value_idx]]
         )
+        value_idx += 1
         new_src_expert = new_from_mlir_values(
-            self.src_expert, [values[13]]
+            self.src_expert, [values[value_idx]]
         )
+        value_idx += 1
         new_src_offset = new_from_mlir_values(
-            self.src_offset, [values[14]]
+            self.src_offset, [values[value_idx]]
         )
+        value_idx += 1
         new_src_rank = new_from_mlir_values(
-            self.src_rank, [values[15]]
+            self.src_rank, [values[value_idx]]
         )
+        value_idx += 1
         new_src_token = new_from_mlir_values(
-            self.src_token, [values[16]]
+            self.src_token, [values[value_idx]]
         )
         return MoEKernelParam(
             new_rank_input_tensor,
             new_rank_input_topk_indices,
             new_num_tokens_per_local_expert_recv,
             new_local_token_send_count_per_expert,
+            new_local_token_send_bar_expert,
             new_rank_token_count,
             new_dispatch_recv_token_tensor,
             new_combine_send_token_tensor,

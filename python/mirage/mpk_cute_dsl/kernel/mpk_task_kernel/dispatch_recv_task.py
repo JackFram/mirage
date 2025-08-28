@@ -46,6 +46,16 @@ class DispatchRecvTask:
         thread_idx, _, _ = cute.arch.thread_idx()
         
         self.profiler.profile_event(event_name="Dispatch-Recv", event_type="begin")
-        ### task implementation
-        inline_ptx.nanosleep(50*1000)
+        self.disptach_recv()
         self.profiler.profile_event(event_name="Dispatch-Recv", event_type="end")
+
+    @cute.jit
+    def disptach_recv(self):
+
+        thread_idx, _, _ = cute.arch.thread_idx()
+        # Decode the task description
+
+        group_idx = self.task_desc & cutlass.Uint32(0x0000007F)
+
+        if thread_idx == 0:
+            cute.printf("Dispatch-Recv group_idx: {} started!", group_idx)

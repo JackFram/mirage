@@ -56,6 +56,22 @@ def ld_flag_volatile(sync_tensor: cute.Tensor, *, loc=None, ip=None) -> Uint32:
             asm_dialect=llvm.AsmDialect.AD_ATT,
         )
     )
+    
+@dsl_user_op
+def ld_flag_relaxed_u32(sync_tensor: cute.Tensor, *, loc=None, ip=None) -> Uint32:
+    flag_addr_ptr_i64 = sync_tensor.iterator.toint(loc=loc, ip=ip).ir_value()
+    return Uint32(
+        llvm.inline_asm(
+            T.i32(),
+            [flag_addr_ptr_i64],
+            "ld.relaxed.gpu.u32 $0, [$1];",
+            "=r, l",
+            has_side_effects=True,
+            is_align_stack=False,
+            asm_dialect=llvm.AsmDialect.AD_ATT,
+        )
+    )
+
 
 @dsl_user_op
 def ld_flag_acquire(sync_tensor: cute.Tensor, *, loc=None, ip=None) -> Uint32:
@@ -79,6 +95,19 @@ def st_flag_release(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None, ip=None
         None,
         [Uint32(flag).ir_value(loc=loc, ip=ip), flag_addr_ptr_i64],
         "st.release.sys.global.u32 [$1], $0;",
+        "r, l",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+
+@dsl_user_op
+def st_flag_relaxed_sys_u32(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None, ip=None) -> None:
+    flag_addr_ptr_i64 = sync_tensor.iterator.toint(loc=loc, ip=ip).ir_value()
+    llvm.inline_asm(
+        None,
+        [Uint32(flag).ir_value(loc=loc, ip=ip), flag_addr_ptr_i64],
+        "st.relaxed.sys.global.u32 [$1], $0;",
         "r, l",
         has_side_effects=True,
         is_align_stack=False,
@@ -124,4 +153,30 @@ def get_globaltimer_lo(*, loc=None, ip=None) -> None:
             is_align_stack=False,
             asm_dialect=llvm.AsmDialect.AD_ATT,
         )
+    )
+    
+@dsl_user_op
+def red_add_shared_u32(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None, ip=None) -> None:
+    flag_addr_ptr_i64 = sync_tensor.iterator.toint(loc=loc, ip=ip).ir_value()
+    llvm.inline_asm(
+        None,
+        [flag_addr_ptr_i64, Uint32(flag).ir_value(loc=loc, ip=ip)],
+        "red.shared.add.u32 [$0], $1;",
+        "l, r",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+    
+@dsl_user_op
+def red_add_global_u32(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None, ip=None) -> None:
+    flag_addr_ptr_i64 = sync_tensor.iterator.toint(loc=loc, ip=ip).ir_value()
+    llvm.inline_asm(
+        None,
+        [flag_addr_ptr_i64, Uint32(flag).ir_value(loc=loc, ip=ip)],
+        "red.global.add.u32 [$0], $1;",
+        "l, r",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
     )

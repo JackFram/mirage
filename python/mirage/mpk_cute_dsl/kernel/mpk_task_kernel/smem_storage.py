@@ -9,3 +9,7 @@ class SharedStorage:
     mpk_task_sync_buffer: cute.struct.MemRange[
         cutlass.Int32, 1
     ]
+    # TODO(Zhihao): hardcoded with number of expert, find a way to initialize from config
+    expert_send_count: cute.struct.MemRange[
+        cutlass.Int32, 32
+    ]

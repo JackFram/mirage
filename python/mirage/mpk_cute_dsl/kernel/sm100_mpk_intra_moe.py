@@ -137,7 +137,17 @@ class SM100MPKIntraMoEKernel:
 
         self.thr_tile_shape = (1, self.hidden_dim//(32 * self.num_worker_warp))
         self.const_param = ConstParam(
+            hidden_dim=self.hidden_dim,
+            hidden_dim_in_bytes=self.hidden_dim_in_bytes,
+            moe_in_dtype=self.moe_param.in_dtype,
             num_topk=self.moe_param.num_topk,
+            num_tokens_per_rank=self.num_tokens_per_rank,
+            num_local_experts=self.num_local_experts,
+            num_local_ranks=self.num_local_ranks,
+            local_rank=self.local_rank,
+            token_buffer_offset_in_bytes=self.token_buffer_offset_in_bytes,
+            count_buffer_offset_in_bytes=self.count_buffer_offset_in_bytes,
+            dispatch_token_stride=self.dispatch_token_stride,
             num_worker_warps=self.num_worker_warp,
             thr_tile_shape=self.thr_tile_shape,
         )

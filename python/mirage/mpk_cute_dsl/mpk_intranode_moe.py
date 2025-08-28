@@ -36,7 +36,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     node_rank = dist_param.node_rank
     device = dist_param.device
 
-    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 7168, 5120, 8, (32 // num_ranks) * num_ranks
+    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 7168, 8, (32 // num_ranks) * num_ranks
 
     assert num_experts % num_ranks == 0, f"num_experts {num_experts} should be divisible by num_ranks {num_ranks}"
     num_local_experts = num_experts // num_ranks
@@ -60,6 +60,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     
     # Meta Info tensors    
     local_token_send_count_per_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
+    local_token_send_bar_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     rank_token_count = torch.zeros((1), dtype=torch.int32, device='cuda')
     recv_num_token_per_rank = torch.zeros((num_local_experts * num_ranks, 1), dtype=torch.int32, device='cuda')
     max_token_per_rank = num_local_experts * num_tokens
@@ -76,8 +77,9 @@ def test_loop(dist_param: ProcessGroupInfo):
     mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')
     
     # MPK task initialization
-    # mpk_task_queue[0][0] = 0x10000000 # HistAll2All
     task_idx = 0
+    mpk_task_queue[task_idx][0] = 0x10000000 # HistAll2All
+    task_idx += 1
     for i in range(num_tokens_per_rank):
         mpk_task_queue[task_idx][0] = (0x20000000 | i) # Dispatch-Send
         task_idx += 1
@@ -132,6 +134,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     combine_send_token_tensor_cute = from_dlpack(combine_send_token_tensor, assumed_align=16)
     output_tensor_cute = from_dlpack(output_tensor, assumed_align=16)
     local_token_send_count_per_expert_cute = from_dlpack(local_token_send_count_per_expert, assumed_align=16)
+    local_token_send_bar_expert_cute = from_dlpack(local_token_send_bar_expert, assumed_align=16)
     rank_token_count_cute = from_dlpack(rank_token_count, assumed_align=16)
 
     recv_num_token_per_rank_cute = from_dlpack(recv_num_token_per_rank, assumed_align=16)
@@ -192,6 +195,7 @@ def test_loop(dist_param: ProcessGroupInfo):
             rank_input_topk_indices=topk_indices_cute,
             num_tokens_per_local_expert_recv=num_tokens_per_local_expert_recv_cute,
             local_token_send_count_per_expert=local_token_send_count_per_expert_cute,
+            local_token_send_bar_expert=local_token_send_bar_expert_cute,
             rank_token_count=rank_token_count_cute,
             dispatch_recv_token_tensor=dispatch_recv_token_tensor_cute,
             combine_send_token_tensor=combine_send_token_tensor_cute,

@@ -26,8 +26,8 @@ class MPKTask(Enum):
     kTerminate: cutlass.Uint32 = 6
 
 # TODO(Zhihao): add task desc structure
-# | 31 - 28 | 27 - 16 | 15 - 0 |
-# |  task   |  param  | token id|
+# | 31 - 28 |     27      |  26 - 15   | 14 - 0 |
+# | task_id | depend_flag | barrier_id |  meta  |
 
 class MPKScheduler:
     def __init__(

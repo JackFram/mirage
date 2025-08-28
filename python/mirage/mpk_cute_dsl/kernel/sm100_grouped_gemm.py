@@ -179,7 +179,7 @@ class GroupedGemmKernel:
             self.mma_tiler[:2],
         )
 
-        print(f"GroupedGemmKernel: tiled_mma={tiled_mma}")
+        # print(f"GroupedGemmKernel: tiled_mma={tiled_mma}")
 
         # Compute mma/cluster/tile shapes
         mma_inst_shape_k = cute.size(tiled_mma.shape_mnk, mode=[2])
@@ -233,7 +233,7 @@ class GroupedGemmKernel:
             )
         )
 
-        print(f"GroupedGemmKernel: num_acc_stage={self.num_acc_stage}, num_ab_stage={self.num_ab_stage}, num_epi_stage={self.num_epi_stage}")
+        # print(f"GroupedGemmKernel: num_acc_stage={self.num_acc_stage}, num_ab_stage={self.num_ab_stage}, num_epi_stage={self.num_epi_stage}")
 
         self.a_smem_layout_staged = sm100_utils.make_smem_layout_a(
             tiled_mma,
@@ -254,7 +254,7 @@ class GroupedGemmKernel:
             self.num_epi_stage,
         )
 
-        print(f"GroupedGemmKernel: a_smem_layout_staged={self.a_smem_layout_staged}, b_smem_layout_staged={self.b_smem_layout_staged}, epi_smem_layout_staged={self.epi_smem_layout_staged}")
+        # print(f"GroupedGemmKernel: a_smem_layout_staged={self.a_smem_layout_staged}, b_smem_layout_staged={self.b_smem_layout_staged}, epi_smem_layout_staged={self.epi_smem_layout_staged}")
 
         tensor_smem_bytes = self._get_tensor_smem_bytes(
             self.a_smem_layout_staged,
@@ -288,7 +288,7 @@ class GroupedGemmKernel:
             tiled_mma, self.mma_tiler, self.num_acc_stage
         )
 
-        print(f"GroupedGemmKernel: num_tmem_alloc_cols={self.num_tmem_alloc_cols}")
+        # print(f"GroupedGemmKernel: num_tmem_alloc_cols={self.num_tmem_alloc_cols}")
 
     @cute.jit
     def __call__(
@@ -349,8 +349,8 @@ class GroupedGemmKernel:
         if cutlass.const_expr(self.a_dtype != self.b_dtype):
             raise TypeError(f"Type mismatch: {self.a_dtype} != {self.b_dtype}")
         
-        print(self.a_dtype, self.b_dtype, self.c_dtype, self.a_major_mode, self.b_major_mode, self.c_layout)
-        exit(0)
+        # print(self.a_dtype, self.b_dtype, self.c_dtype, self.a_major_mode, self.b_major_mode, self.c_layout)
+        # exit(0)
 
         # Setup attributes that dependent on gemm inputs
         self._setup_attributes()
