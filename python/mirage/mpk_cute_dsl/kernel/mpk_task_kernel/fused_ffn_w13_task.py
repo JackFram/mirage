@@ -1,6 +1,5 @@
 import cutlass.cute as cute
 import cutlass
-from mpk_cute_dsl.kernel.mpk_task_kernel.undefined_task import UndefinedTask
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
@@ -11,7 +10,7 @@ from cutlass.cutlass_dsl import (
 )
 from cutlass._mlir import ir
 
-class CombineSendTask:
+class FusedFFNW13Task:
     def __init__(
             self, 
             task_desc: cutlass.Uint32,
@@ -20,25 +19,42 @@ class CombineSendTask:
             kernel_param: MoEKernelParam, 
             smem_storage: SharedStorage
         ):
+        # Task Descripter Format:
+        # | 31 - 28 |     27      |  26 - 15   |   14 - 8  |    7 - 0    |
+        # | task_id | depend_flag | barrier_id | group_idx | ffn_task_id |
         self.task_desc = task_desc
         self.profiler = profiler
         self.const_param = const_param
         self.kernel_param = kernel_param
         self.smem_storage = smem_storage
-        self.task_name = "Combine-Send"
+        self.task_name = "Fused-FFN-W13-Task"
 
     def __extract_mlir_values__(self):
         values = self.task_desc.__extract_mlir_values__()
         return values
 
-    def __new_from_mlir_values__(self, values: list[ir.Value]) -> "CombineSendTask":
+    def __new_from_mlir_values__(self, values: list[ir.Value]) -> "FusedFFNW13Task":
         assert len(values) == 1
         new_task_desc = new_from_mlir_values(
             self.task_desc, [values[0]]
         )
-        return CombineSendTask(new_task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
+        return FusedFFNW13Task(new_task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
 
     @cute.jit
     def execute(self):
-        # Execute the combine send task
-        pass
+        # Execute the combine receive task
+        self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="begin")
+        self.fused_ffn()
+        self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="end")
+    
+    @cute.jit
+    def fused_ffn(self):
+        thread_idx, _, _ = cute.arch.thread_idx()
+        group_idx = (self.task_desc >> 7) & cutlass.Uint32(0x000000FF)
+        ffn_task_id = (self.task_desc) & cutlass.Uint32(0x0000007F)
+        
+        # fused kernel here
+        
+        # end of the kernel
+        
+        # 

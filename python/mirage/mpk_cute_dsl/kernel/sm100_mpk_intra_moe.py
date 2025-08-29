@@ -15,7 +15,7 @@ from mpk_cute_dsl.moe_utils import MoEParam
 from mpk_cute_dsl.dist_utils import ProcessGroupInfo
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
-from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKScheduler
+from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_scheduler import MPKScheduler
 from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam

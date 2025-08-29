@@ -18,18 +18,14 @@ from mpk_cute_dsl.param import MoEKernelParam
 
 from mpk_cute_dsl.testing import bench_gpu_time
 
-def test_loop(dist_param: ProcessGroupInfo):
-
+def reset_tensors(dist_param: ProcessGroupInfo):
+    torch.cuda.empty_cache()
+        
     '''
     Initialize per rank input tensors
     '''
 
     num_ranks = dist_param.world_size
-    num_local_ranks = dist_param.world_local_size
-    rank = dist_param.rank
-    local_rank = dist_param.local_rank 
-    node_rank = dist_param.node_rank
-    device = dist_param.device
 
     num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 7168, 8, (32 // num_ranks) * num_ranks
 
@@ -70,7 +66,7 @@ def test_loop(dist_param: ProcessGroupInfo):
     mpk_task_queue = torch.zeros((mpk_queue_len, 1), dtype=torch.uint32, device='cuda')
     mpk_task_consume_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
-    mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')
+    mpk_task_barrier = torch.zeros((1024, 1), dtype=torch.int32, device='cuda')
     
     # MPK task initialization
     task_idx = 0
@@ -212,7 +208,14 @@ def test_loop(dist_param: ProcessGroupInfo):
             mpk_task_produce_idx=mpk_task_produce_idx_cute,
             mpk_task_barrier=mpk_task_barrier_cute,
         )
+    torch.cuda.synchronize()
     
+    return intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream
+
+def compile_kernel(dist_param: ProcessGroupInfo):
+
+    intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
+
     intra_moe_kernel_compiled = cute.compile(
         intra_moe_kernel,
         kernel_param,
@@ -220,17 +223,52 @@ def test_loop(dist_param: ProcessGroupInfo):
         profiler_ptr_cute,
         current_stream,
     )
+    
+    return intra_moe_kernel_compiled
 
-    torch.cuda.synchronize()
+def test_loop(dist_param: ProcessGroupInfo, warm_up_iters=1, actual_iters=10):
 
-    intra_moe_kernel_compiled(
-        kernel_param,
-        profiler_buffer_cute,
-        profiler_ptr_cute,
-        current_stream,
-    )
+    rank = dist_param.rank
+    intra_moe_kernel_compiled = compile_kernel(dist_param)
+    
+    for warm_up in range(warm_up_iters):
+        intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
+        torch.cuda.synchronize()
 
-    torch.cuda.synchronize()
+        intra_moe_kernel_compiled(
+            kernel_param,
+            profiler_buffer_cute,
+            profiler_ptr_cute,
+            current_stream,
+        )
+        
+        torch.cuda.synchronize()
+    
+    start_events = [torch.cuda.Event(enable_timing=True) for _ in range(actual_iters)]
+    end_events = [torch.cuda.Event(enable_timing=True) for _ in range(actual_iters)]
+
+    for run in range(actual_iters):
+        intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
+        torch.cuda.synchronize()
+
+        start_events[run].record()
+        intra_moe_kernel_compiled(
+            kernel_param,
+            profiler_buffer_cute,
+            profiler_ptr_cute,
+            current_stream,
+        )
+        end_events[run].record()
+        
+        torch.cuda.synchronize()
+        
+    measured_times = []
+    for iter_idx in range(actual_iters):
+        measured_times.append(start_events[iter_idx].elapsed_time(end_events[iter_idx]))
+
+    ms = np.median(measured_times)
+
+    print(f"rank-{rank} median time: {ms} ms")
 
     profiler_file_name = f"results/mpk_intranode_moe_rank_{rank}.perfetto-trace"
     export_to_perfetto_trace(
@@ -239,64 +277,8 @@ def test_loop(dist_param: ProcessGroupInfo):
         num_sm=intra_moe_kernel.num_workers,
         num_warps=intra_moe_kernel.num_warp,
     )
-
-    def fn() -> None:
-        intra_moe_kernel_compiled(
-            kernel_param,
-            profiler_buffer_cute,
-            profiler_ptr_cute,
-            current_stream,
-        )
-
-    bench_gpu_time(fn)
-
-    measurements = bench_gpu_time(
-        fn,
-        dry_run_iters=5,
-        repeat_iters=20,
-    )
     
-    latency_ms = np.median(measurements)
-
-    print("rank{}: MPK Intra MoE kernel latency: {:.3f} ms".format(rank, latency_ms))
-
-    # print("rank{}: Dispatch completed".format(rank))
-    # print("rank{}: num_tokens_per_local_expert_recv: {}".format(rank, num_tokens_per_local_expert_recv))
-    # print("rank{}: dispatch_recv_token_tensor shape: {}".format(rank, dispatch_recv_token_tensor.shape))
-
-    return
-
-    run_grouped_gemm(
-        num_groups=2,
-        problem_sizes_mnkl=((128, 128, 128, 1), (128, 128, 128, 1)),
-        ab_dtype=cutlass.Float16,
-        c_dtype=cutlass.Float16,
-        acc_dtype=cutlass.Float32,
-        a_major="k",
-        b_major="k",
-        c_major="n",
-        mma_tiler_mn=(128, 128),
-        cluster_shape_mn=(1, 1),
-        use_2cta_instrs=False,
-        tensormap_update_mode=utils.TensorMapUpdateMode.SMEM,
-        tolerance=1e-01,
-        warmup_iterations=0,
-        iterations=1,
-        skip_ref_check=False,
-    )
-
-    '''
-    Combine
-    '''
-
-    '''
-    Check results
-    '''
-
-    print(f"rank{rank}: PASS")
-
-
-    dist.destroy_process_group()
+    ## check results here:
 
 
 if __name__ == "__main__":

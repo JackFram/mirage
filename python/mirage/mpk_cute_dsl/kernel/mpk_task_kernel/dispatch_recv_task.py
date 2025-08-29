@@ -6,6 +6,7 @@ import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 from mpk_cute_dsl.param import MoEKernelParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
 from mpk_cute_dsl.const_param import ConstParam
+from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
 from typing import List, Type, Union
 from inspect import isclass
@@ -62,7 +63,7 @@ class DispatchRecvTask:
         thread_idx, _, _ = cute.arch.thread_idx()
         # Decode the task description
 
-        group_idx = self.task_desc & cutlass.Uint32(0x0000007F)
+        group_idx = self.task_desc & cutlass.Uint32(0x00007FFF)
 
         local_buffer_ptr = self.kernel_param.local_buffer_ptr
         num_local_experts = self.const_param.num_local_experts
@@ -71,6 +72,7 @@ class DispatchRecvTask:
 
         mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
         mpk_task_queue = self.kernel_param.mpk_task_queue
+        mpk_task_barrier = self.kernel_param.mpk_task_barrier
         mpk_queue_len = self.const_param.mpk_queue_len
 
         local_rank = group_idx // num_local_experts
@@ -82,6 +84,8 @@ class DispatchRecvTask:
             while(cutlass.dynamic_expr(token_count == 0)):
                 token_count = inline_ptx.ld_flag_sys_acquire_u32(count_tensor)
             token_count -= 1
+            # update the barrier for w13 GeMM task
+            inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_barrier[group_idx, None], ffn_task_num)
             self.worker_sync_buffer[0] = token_count
 
         cute.arch.barrier(barrier_id=0, number_of_threads=num_worker_warps * 32)
@@ -90,7 +94,7 @@ class DispatchRecvTask:
         if token_count > 0:
             # add fused ffn task to the queue
             for ffn_task_id in range(thread_idx, ffn_task_num, 32 * num_worker_warps):
-                ffn_task_desc = cutlass.Uint32((4 << cutlass.Uint32(28)) | (group_idx << cutlass.Uint32(8)) | cutlass.Uint32(ffn_task_id))
+                ffn_task_desc = cutlass.Uint32((MPKTask.kFusedFFNW13.value << cutlass.Uint32(28)) | (group_idx << cutlass.Uint32(8)) | cutlass.Uint32(ffn_task_id))
                 task_write_idx = inline_ptx.atomic_add(
                     mpk_task_produce_idx,
                     cutlass.Int32(1),
