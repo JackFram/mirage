@@ -33,6 +33,11 @@ class MoEKernelParam:
             src_offset: cute.Tensor,
             src_rank: cute.Tensor,
             src_token: cute.Tensor,
+            # mpk queue tensor
+            mpk_task_queue: cute.Tensor,
+            mpk_task_consume_idx: cute.Tensor,
+            mpk_task_produce_idx: cute.Tensor,
+            mpk_task_barrier: cute.Tensor,
     ):
         self.rank_input_tensor = rank_input_tensor
         self.rank_input_topk_indices = rank_input_topk_indices
@@ -52,6 +57,10 @@ class MoEKernelParam:
         self.src_offset = src_offset
         self.src_rank = src_rank
         self.src_token = src_token
+        self.mpk_task_queue = mpk_task_queue
+        self.mpk_task_consume_idx = mpk_task_consume_idx
+        self.mpk_task_produce_idx = mpk_task_produce_idx
+        self.mpk_task_barrier = mpk_task_barrier
 
     def __c_pointers__(self):
         pointers = []
@@ -73,6 +82,10 @@ class MoEKernelParam:
         pointers.extend(get_c_pointers(self.src_offset))
         pointers.extend(get_c_pointers(self.src_rank))
         pointers.extend(get_c_pointers(self.src_token))
+        pointers.extend(get_c_pointers(self.mpk_task_queue))
+        pointers.extend(get_c_pointers(self.mpk_task_consume_idx))
+        pointers.extend(get_c_pointers(self.mpk_task_produce_idx))
+        pointers.extend(get_c_pointers(self.mpk_task_barrier))
         return pointers
 
     def __extract_mlir_values__(self):
@@ -95,6 +108,10 @@ class MoEKernelParam:
         values.extend(extract_mlir_values(self.src_offset))
         values.extend(extract_mlir_values(self.src_rank))
         values.extend(extract_mlir_values(self.src_token))
+        values.extend(extract_mlir_values(self.mpk_task_queue))
+        values.extend(extract_mlir_values(self.mpk_task_consume_idx))
+        values.extend(extract_mlir_values(self.mpk_task_produce_idx))
+        values.extend(extract_mlir_values(self.mpk_task_barrier))
         return values
     
     def __get_mlir_types__(self):
@@ -117,10 +134,14 @@ class MoEKernelParam:
         values.extend(get_mlir_types(self.src_offset))
         values.extend(get_mlir_types(self.src_rank))
         values.extend(get_mlir_types(self.src_token))
+        values.extend(get_mlir_types(self.mpk_task_queue))
+        values.extend(get_mlir_types(self.mpk_task_consume_idx))
+        values.extend(get_mlir_types(self.mpk_task_produce_idx))
+        values.extend(get_mlir_types(self.mpk_task_barrier))
         return values
 
     def __new_from_mlir_values__(self, values: list[ir.Value]) -> "MoEKernelParam":
-        assert len(values) == 18
+        assert len(values) == 22
         value_idx = 0
         new_rank_input_tensor = new_from_mlir_values(
             self.rank_input_tensor, [values[value_idx]]
@@ -193,6 +214,22 @@ class MoEKernelParam:
         new_src_token = new_from_mlir_values(
             self.src_token, [values[value_idx]]
         )
+        value_idx += 1
+        new_mpk_task_queue = new_from_mlir_values(
+            self.mpk_task_queue, [values[value_idx]]
+        )
+        value_idx += 1
+        new_mpk_task_consume_idx = new_from_mlir_values(
+            self.mpk_task_consume_idx, [values[value_idx]]
+        )
+        value_idx += 1
+        new_mpk_task_produce_idx = new_from_mlir_values(
+            self.mpk_task_produce_idx, [values[value_idx]]
+        )
+        value_idx += 1
+        new_mpk_task_barrier = new_from_mlir_values(
+            self.mpk_task_barrier, [values[value_idx]]
+        )
         return MoEKernelParam(
             new_rank_input_tensor,
             new_rank_input_topk_indices,
@@ -212,4 +249,8 @@ class MoEKernelParam:
             new_src_offset,
             new_src_rank,
             new_src_token,
+            new_mpk_task_queue,
+            new_mpk_task_consume_idx,
+            new_mpk_task_produce_idx,
+            new_mpk_task_barrier,
         )

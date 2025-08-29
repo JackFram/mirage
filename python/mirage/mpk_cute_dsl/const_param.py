@@ -7,6 +7,7 @@ class ConstParam:
             self, 
             hidden_dim: cutlass.Constexpr[int],
             hidden_dim_in_bytes: cutlass.Constexpr[int],
+            inter_dim: cutlass.Constexpr[int],
             moe_in_dtype: cutlass.Constexpr[torch.dtype],
             num_topk: cutlass.Constexpr[int],
             num_tokens_per_rank: cutlass.Constexpr[int],
@@ -16,13 +17,19 @@ class ConstParam:
             token_buffer_offset_in_bytes: cutlass.Constexpr[int],
             count_buffer_offset_in_bytes: cutlass.Constexpr[int],
             dispatch_token_stride: cutlass.Constexpr[int],
+            mpk_queue_len: cutlass.Constexpr[int],
             num_worker_warps: cutlass.Constexpr[int],
-            thr_tile_shape: tuple[int, int]
+            thr_tile_shape: tuple[int, int],
+            mma_tiler_mn: tuple[int, int],
+            ffn_task_num: cutlass.Constexpr[int],
         ):
         
         # kernel const parameters
         self.num_worker_warps = num_worker_warps
         self.thr_tile_shape = thr_tile_shape
+        self.mma_tiler_mn = mma_tiler_mn
+        self.ffn_task_num = ffn_task_num
+        self.mpk_queue_len = mpk_queue_len
         
         # moe comm buffer const parameters
         self.token_buffer_offset_in_bytes = token_buffer_offset_in_bytes
@@ -31,6 +38,7 @@ class ConstParam:
 
         # moe const parameters
         self.hidden_dim = hidden_dim
+        self.inter_dim = inter_dim
         self.hidden_dim_in_bytes = hidden_dim_in_bytes
         self.moe_in_dtype = moe_in_dtype
         self.num_topk = num_topk

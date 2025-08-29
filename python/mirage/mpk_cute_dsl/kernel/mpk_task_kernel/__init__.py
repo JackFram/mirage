@@ -6,3 +6,4 @@ from .fetch_task import FetchTask
 from .terminate_task import TerminateTask
 from .undefined_task import UndefinedTask
 from .hist_a2a_task import HistAll2AllTask
+from .fused_ffn_task import FusedFFNTask

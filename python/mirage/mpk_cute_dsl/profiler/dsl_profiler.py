@@ -17,26 +17,28 @@ idx_2_name_dict = {
             1: "Hist+All2All",
             2: "Dispatch-Send",
             3: "Dispatch-Recv",
-            4: "Combine-Send",
-            5: "Combine-Recv",
-            6: "Fetch-Task",
-            7: "Sync-Task",
-            8: "Add-Task",
-            9: "Terminate-Task",
-            10: "Undefined-Task",
+            4: "Fused-FFN",
+            5: "Combine-Send",
+            6: "Combine-Recv",
+            7: "Fetch-Task",
+            8: "Sync-Task",
+            9: "Add-Task",
+            10: "Terminate-Task",
+            11: "Undefined-Task",
         }
 
 name_2_idx_dict = {
             "Hist+All2All": 1,
             "Dispatch-Send": 2,
             "Dispatch-Recv": 3,
-            "Combine-Send": 4,
-            "Combine-Recv": 5,
-            "Fetch-Task": 6,
-            "Sync-Task": 7,
-            "Add-Task": 8,
-            "Terminate-Task": 9,
-            "Undefined-Task": 10
+            "Fused-FFN": 4,
+            "Combine-Send": 5,
+            "Combine-Recv": 6,
+            "Fetch-Task": 7,
+            "Sync-Task": 8,
+            "Add-Task": 9,
+            "Terminate-Task": 10,
+            "Undefined-Task": 11
         }
 
 class EventType(Enum):

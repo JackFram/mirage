@@ -21,11 +21,12 @@ class MPKTask(Enum):
     kHistAll2All: cutlass.Uint32 = 1
     kDispatchSend: cutlass.Uint32 = 2
     kDispatchRecv: cutlass.Uint32 = 3
-    kCombineSend: cutlass.Uint32 = 4
-    kCombineRecv: cutlass.Uint32 = 5
-    kTerminate: cutlass.Uint32 = 6
+    kFusedFFN: cutlass.Uint32 = 4
+    kCombineSend: cutlass.Uint32 = 5
+    kCombineRecv: cutlass.Uint32 = 6
+    kTerminate: cutlass.Uint32 = 7
 
-# TODO(Zhihao): add task desc structure
+# Task Descripter Format:
 # | 31 - 28 |     27      |  26 - 15   | 14 - 0 |
 # | task_id | depend_flag | barrier_id |  meta  |
 
@@ -96,6 +97,8 @@ class MPKScheduler:
         warp_idx = cute.arch.warp_idx()
         warp_idx = cute.arch.make_warp_uniform(warp_idx)
         thread_idx, _, _ = cute.arch.thread_idx()
+
+        mpk_queue_len = self.const_param.mpk_queue_len
         # specialized scheduler warp 
         if warp_idx == self.scheduler_warp_idx:
             self.profiler.profile_event(event_name="Fetch-Task", event_type="begin")
@@ -105,7 +108,7 @@ class MPKScheduler:
                 task_load_idx = inline_ptx.atomic_add(
                     self.task_consume_idx,
                     cutlass.Int32(1),
-                ) % cutlass.Int32(1024)
+                ) % cutlass.Int32(mpk_queue_len)
                 task_desc = inline_ptx.ld_flag_volatile(self.task_queue[task_load_idx, None])
                 # task_code = 0
                 # while(cutlass.dynamic_expr(task_code == 0)): 
@@ -121,13 +124,14 @@ class MPKScheduler:
     @cute.jit
     def add_task(self, task_desc: cutlass.Uint32):
         # register -> gmem task store with atomic add
+        mpk_queue_len = self.const_param.mpk_queue_len
         thread_idx, _, _ = cute.arch.thread_idx()
         if thread_idx == self.scheduler_warp_idx * 32:
             self.profiler.profile_event(event_name="Add-Task", event_type="begin")
             task_write_idx = inline_ptx.atomic_add(
                 self.task_produce_idx,
                 cutlass.Int32(1),
-            ) % cutlass.Int32(1024)
+            ) % cutlass.Int32(mpk_queue_len)
             inline_ptx.st_flag_volatile(self.task_queue[task_write_idx, None], task_desc)
             self.profiler.profile_event(event_name="Add-Task", event_type="end")
 
@@ -151,9 +155,10 @@ class MPKScheduler:
         thread_idx, _, _ = cute.arch.thread_idx()
 
         task_code = (self.task_desc >> 28)
+        is_final_task = (task_code == MPKTask.kTerminate.value)
 
         # executing task with worker warps
-        if warp_idx < self.scheduler_warp_idx:
+        if not is_final_task and warp_idx < self.scheduler_warp_idx:
 
             if task_code == MPKTask.kFetch.value:
                 task_runner = FetchTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
@@ -167,13 +172,14 @@ class MPKScheduler:
             elif task_code == MPKTask.kDispatchRecv.value:
                 task_runner = DispatchRecvTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
+            elif task_code == MPKTask.kFusedFFN.value:
+                task_runner = FusedFFNTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
+                task_runner.execute()
             elif task_code == MPKTask.kCombineSend.value:
                 task_runner = CombineSendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kCombineRecv.value:
                 task_runner = CombineRecvTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
-
-        is_final_task = (task_code == MPKTask.kTerminate.value)
 
         return is_final_task

@@ -1,27 +1,22 @@
-import os
-import time
 import torch
 import torch.distributed as dist
-
+import numpy as np
 import cutlass
 import cutlass.cute as cute
 import cuda.bindings.driver as cuda
 import cutlass.utils as utils
-from cutlass.cute.nvgpu import cpasync, tcgen05
-import cutlass.utils.blackwell_helpers as sm100_utils
-import cutlass.torch as cutlass_torch
 from cutlass.cute.runtime import from_dlpack
 from cutlass.torch import dtype as torch_dtype
 
-import cuda.bindings.runtime as cudart
-import comm 
+import comm
 
-from cuda_utils import checkCudaErrors
 from moe_utils import MoEParam
 from dist_utils import ProcessGroupInfo, parallel_launch
 from kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
 from profiler.dsl_profiler import export_to_perfetto_trace
 from mpk_cute_dsl.param import MoEKernelParam
+
+from mpk_cute_dsl.testing import bench_gpu_time
 
 def test_loop(dist_param: ProcessGroupInfo):
 
@@ -71,7 +66,8 @@ def test_loop(dist_param: ProcessGroupInfo):
     src_token = torch.zeros((max_token_per_rank), dtype=torch.int32, device='cuda')
     
     # MPK task queue buffer
-    mpk_task_queue = torch.zeros((1024, 1), dtype=torch.uint32, device='cuda')
+    mpk_queue_len = 5120
+    mpk_task_queue = torch.zeros((mpk_queue_len, 1), dtype=torch.uint32, device='cuda')
     mpk_task_consume_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_barrier = torch.zeros((16, 1), dtype=torch.int32, device='cuda')
@@ -86,6 +82,8 @@ def test_loop(dist_param: ProcessGroupInfo):
     for i in range(num_local_experts * num_ranks):
         mpk_task_queue[task_idx][0] = (0x30000000 | i) # Dispatch-Recv
         task_idx += 1
+    
+    mpk_task_produce_idx[0] = task_idx
 
     # Profiler tensor
     profiler_buffer_size = 148 * 9 * 128
@@ -209,34 +207,24 @@ def test_loop(dist_param: ProcessGroupInfo):
             src_offset=src_offset_cute,
             src_rank=src_rank_cute,
             src_token=src_token_cute,
+            mpk_task_queue=mpk_task_queue_cute,
+            mpk_task_consume_idx=mpk_task_consume_idx_cute,
+            mpk_task_produce_idx=mpk_task_produce_idx_cute,
+            mpk_task_barrier=mpk_task_barrier_cute,
         )
     
     intra_moe_kernel_compiled = cute.compile(
         intra_moe_kernel,
         kernel_param,
-        mpk_task_queue_cute,
-        mpk_task_consume_idx_cute,
-        mpk_task_produce_idx_cute,
-        mpk_task_barrier_cute,
         profiler_buffer_cute,
         profiler_ptr_cute,
         current_stream,
     )
 
-    # Distpatch
-    # Input: 
-    # - input_tensor: [num_tokens_per_rank, hidden_dim]
-    # - topk_indices: [num_tokens_per_rank, num_topk]
-    # Output:
-    # - num_tokens_per_local_expert_recv: [num_local_experts, 1]
-    # - dispatch_recv_token_tensor: [num_local_experts, num_tokens, 1, hidden_dim]
+    torch.cuda.synchronize()
 
     intra_moe_kernel_compiled(
         kernel_param,
-        mpk_task_queue_cute,
-        mpk_task_consume_idx_cute,
-        mpk_task_produce_idx_cute,
-        mpk_task_barrier_cute,
         profiler_buffer_cute,
         profiler_ptr_cute,
         current_stream,
@@ -251,6 +239,26 @@ def test_loop(dist_param: ProcessGroupInfo):
         num_sm=intra_moe_kernel.num_workers,
         num_warps=intra_moe_kernel.num_warp,
     )
+
+    def fn() -> None:
+        intra_moe_kernel_compiled(
+            kernel_param,
+            profiler_buffer_cute,
+            profiler_ptr_cute,
+            current_stream,
+        )
+
+    bench_gpu_time(fn)
+
+    measurements = bench_gpu_time(
+        fn,
+        dry_run_iters=5,
+        repeat_iters=20,
+    )
+    
+    latency_ms = np.median(measurements)
+
+    print("rank{}: MPK Intra MoE kernel latency: {:.3f} ms".format(rank, latency_ms))
 
     # print("rank{}: Dispatch completed".format(rank))
     # print("rank{}: num_tokens_per_local_expert_recv: {}".format(rank, num_tokens_per_local_expert_recv))

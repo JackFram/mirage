@@ -24,7 +24,8 @@ from mpk_cute_dsl.const_param import ConstParam
 """
 A persistent MoE kernel (dispatch+FFN+combine) with cute DSL on blackwell (SM100).
 TODO(Zhihao): 
-  1. 
+  1. Create a customized buffer class for moe communication buffer management
+  2. Add the all dummy tasks including termination task logic
 """
 
 class SM100MPKIntraMoEKernel:
@@ -33,6 +34,7 @@ class SM100MPKIntraMoEKernel:
         moe_param: MoEParam,
         dist_param: ProcessGroupInfo,
         profiler_buffer_size: int = 1024,
+        mpk_queue_len: int = 5120,
         profiler_enabled: bool = False,
     ):
         self.moe_param = moe_param
@@ -49,6 +51,7 @@ class SM100MPKIntraMoEKernel:
         self.num_worker_warp: cutlass.Constexpr[int] = self.num_warp - 1 # 8 warps for doing the actual work
         self.threads_per_cta: cutlass.Constexpr[int] = 32 * self.num_warp
         self.smem_capacity = sm100_utils.SMEM_CAPACITY["sm100"]
+        self.mpk_queue_len = mpk_queue_len
         
         # MoE meta info setup
         self.num_local_experts: cutlass.Constexpr[int] = int(moe_param.num_experts / (dist_param.world_size))
@@ -135,10 +138,13 @@ class SM100MPKIntraMoEKernel:
         self.count_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16
         self.token_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16 + cutlass.cute.round_up(self.num_local_experts * 4, 16)
 
+        self.ffn_task_num = self.moe_param.inter_dim // self.moe_param.mma_tiler_mn[1]
+
         self.thr_tile_shape = (1, self.hidden_dim//(32 * self.num_worker_warp))
         self.const_param = ConstParam(
             hidden_dim=self.hidden_dim,
             hidden_dim_in_bytes=self.hidden_dim_in_bytes,
+            inter_dim=self.moe_param.inter_dim,
             moe_in_dtype=self.moe_param.in_dtype,
             num_topk=self.moe_param.num_topk,
             num_tokens_per_rank=self.num_tokens_per_rank,
@@ -150,17 +156,15 @@ class SM100MPKIntraMoEKernel:
             dispatch_token_stride=self.dispatch_token_stride,
             num_worker_warps=self.num_worker_warp,
             thr_tile_shape=self.thr_tile_shape,
+            mma_tiler_mn=self.moe_param.mma_tiler_mn,
+            ffn_task_num=self.ffn_task_num,
+            mpk_queue_len=self.mpk_queue_len,
         )
     
     @cute.jit
     def __call__(
         self,
         kernel_param: MoEKernelParam,
-        # mpk meta
-        mpk_task_queue: cute.Tensor,
-        mpk_task_consume_idx: cute.Tensor,
-        mpk_task_produce_idx: cute.Tensor,
-        mpk_task_barrier: cute.Tensor,
         # profiler meta
         profiler_buffer: cute.Tensor,
         profiler_ptr: cute.Tensor,
@@ -194,11 +198,6 @@ class SM100MPKIntraMoEKernel:
         
         self.kernel(
             kernel_param=kernel_param,
-            # mpk meta
-            mpk_task_queue=mpk_task_queue,
-            mpk_task_consume_idx=mpk_task_consume_idx,
-            mpk_task_produce_idx=mpk_task_produce_idx,
-            mpk_task_barrier=mpk_task_barrier,
             # profiler meta
             profiler_buffer=profiler_buffer,
             profiler_ptr=profiler_ptr,
@@ -214,11 +213,6 @@ class SM100MPKIntraMoEKernel:
     def kernel(
         self,
         kernel_param: MoEKernelParam,
-        # mpk meta
-        mpk_task_queue: cute.Tensor,
-        mpk_task_consume_idx: cute.Tensor,
-        mpk_task_produce_idx: cute.Tensor,
-        mpk_task_barrier: cute.Tensor,
         # profiler meta
         profiler_buffer: cute.Tensor,
         profiler_ptr: cute.Tensor,
@@ -245,30 +239,23 @@ class SM100MPKIntraMoEKernel:
         
         scheduler = MPKScheduler(
             scheduler_warp_idx=self.num_warp-1, 
-            task_queue=mpk_task_queue,
-            task_consume_idx=mpk_task_consume_idx,
-            task_produce_idx=mpk_task_produce_idx,
-            task_barrier=mpk_task_barrier,
+            task_queue=kernel_param.mpk_task_queue,
+            task_consume_idx=kernel_param.mpk_task_consume_idx,
+            task_produce_idx=kernel_param.mpk_task_produce_idx,
+            task_barrier=kernel_param.mpk_task_barrier,
             smem_storage=storage,
             const_param=self.const_param,
             kernel_param=kernel_param,
             profiler=profiler,
         )
-           
-        # mega-kernel debug    
-        scheduler.fetch_next_task()
-        # if thread_idx % 32 == 0:
-        #     cute.printf("block-{}, warp-{}, thread-{}", block_idx, warp_idx, thread_idx)
-        scheduler.sync_task()
-        is_final_task = scheduler.execute_task()
 
-        # # mega-kernel starts
-        # test_num_work = 1
-        # while(test_num_work > 0):
-        #     scheduler.fetch_next_task()
-        #     scheduler.sync_task()
-        #     scheduler.execute_task()
-        #     test_num_work -= 1
+        # mega-kernel starts
+        test_num_work = 1
+        while(test_num_work > 0):
+            scheduler.fetch_next_task()
+            scheduler.sync_task()
+            is_final_task = scheduler.execute_task()
+            test_num_work -= 1
 
     @cute.jit
     def dispatch_device(

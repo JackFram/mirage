@@ -118,7 +118,8 @@ class DispatchSendTask:
             
             # update the completion signal to a global sync buffer
             if (thread_idx == 0):
-                recv_index = inline_ptx.red_add_global_u32(local_token_send_bar_expert[expert_idx, None], 1)
+                # use release to flush the data to gmem before updating the flag
+                recv_index = inline_ptx.red_add_global_release_u32(local_token_send_bar_expert[expert_idx, None], 1)
             
     @cute.jit
     def make_global_tensor_from_buffer_ptr(
