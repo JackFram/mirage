@@ -7,3 +7,4 @@ from .terminate_task import TerminateTask
 from .undefined_task import UndefinedTask
 from .hist_a2a_task import HistAll2AllTask
 from .fused_ffn_w13_task import FusedFFNW13Task
+from .token_gather_task import TokenGatherTask

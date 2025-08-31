@@ -21,6 +21,7 @@ class ConstParam:
             num_worker_warps: cutlass.Constexpr[int],
             thr_tile_shape: tuple[int, int],
             mma_tiler_mn: tuple[int, int],
+            swapAB: bool,
             ffn_task_num: cutlass.Constexpr[int],
         ):
         
@@ -28,6 +29,7 @@ class ConstParam:
         self.num_worker_warps = num_worker_warps
         self.thr_tile_shape = thr_tile_shape
         self.mma_tiler_mn = mma_tiler_mn
+        self.swapAB = swapAB
         self.ffn_task_num = ffn_task_num
         self.mpk_queue_len = mpk_queue_len
         
@@ -48,3 +50,6 @@ class ConstParam:
         # dist const parameters
         self.num_local_ranks = num_local_ranks
         self.local_rank = local_rank
+
+        # barrier offsets
+        self.gemm_tile_bar_offset = 0 # num_tokens // mma_tiler_m if swapAB=False else num_tokens // mma_tiler_n

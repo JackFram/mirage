@@ -16,8 +16,8 @@ from mpk_cute_dsl.const_param import ConstParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
 # Task Descripter Format:
-# | 31 - 28 |     27      |  26 - 15   | 14 - 0 |
-# | task_id | depend_flag | barrier_id |  meta  |
+# | 31 - 28 | 27 - 0 |
+# | task_id |  meta  |
 
 class MPKScheduler:
     def __init__(
@@ -169,6 +169,9 @@ class MPKScheduler:
                 task_runner.execute()
             elif task_code == MPKTask.kCombineRecv.value:
                 task_runner = CombineRecvTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
+                task_runner.execute()
+            elif task_code == MPKTask.kTokenGather.value:
+                task_runner = TokenGatherTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
 
         return is_final_task

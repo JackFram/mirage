@@ -157,6 +157,7 @@ class SM100MPKIntraMoEKernel:
             num_worker_warps=self.num_worker_warp,
             thr_tile_shape=self.thr_tile_shape,
             mma_tiler_mn=self.moe_param.mma_tiler_mn,
+            swapAB=self.moe_param.swapAB,
             ffn_task_num=self.ffn_task_num,
             mpk_queue_len=self.mpk_queue_len,
         )
@@ -384,7 +385,6 @@ class SM100MPKIntraMoEKernel:
             token_start = self.block_token_start_index[recv_group_idx]
 
             for group_token_idx in range(thread_idx, token_count, block_dim):
-            # if (thread_idx <  token_count):
                 meta_tensor = self.get_dispatch_meta_ptr_buffer(
                     local_buffer_ptr,
                     local_rank,

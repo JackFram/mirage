@@ -25,6 +25,7 @@ idx_2_name_dict = {
             9: "Add-Task",
             10: "Terminate-Task",
             11: "Undefined-Task",
+            12: "Token-Gather-Task"
         }
 
 name_2_idx_dict = {
@@ -38,7 +39,8 @@ name_2_idx_dict = {
             "Sync-Task": 8,
             "Add-Task": 9,
             "Terminate-Task": 10,
-            "Undefined-Task": 11
+            "Undefined-Task": 11,
+            "Token-Gather-Task": 12
         }
 
 class EventType(Enum):

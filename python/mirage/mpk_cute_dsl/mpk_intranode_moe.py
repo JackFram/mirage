@@ -226,7 +226,7 @@ def compile_kernel(dist_param: ProcessGroupInfo):
     
     return intra_moe_kernel_compiled
 
-def test_loop(dist_param: ProcessGroupInfo, warm_up_iters=1, actual_iters=10):
+def test_loop(dist_param: ProcessGroupInfo, warm_up_iters=0, actual_iters=1):
 
     rank = dist_param.rank
     intra_moe_kernel_compiled = compile_kernel(dist_param)

@@ -11,3 +11,4 @@ class MPKTask(Enum):
     kFusedFFNW2Send: cutlass.Uint32 = 5
     kCombineRecv: cutlass.Uint32 = 6
     kTerminate: cutlass.Uint32 = 7
+    kTokenGather: cutlass.Uint32 = 8
