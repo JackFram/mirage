@@ -66,7 +66,8 @@ class DispatchSendTask:
         rank_input_topk_indices = self.kernel_param.rank_input_topk_indices
         local_token_send_count_per_expert = self.kernel_param.local_token_send_count_per_expert
         local_token_send_bar_expert = self.kernel_param.local_token_send_bar_expert
-        
+        worker_sync_bar_id = self.const_param.worker_sync_bar_id
+
         thr_tile_shape = self.const_param.thr_tile_shape
         num_topk = self.const_param.num_topk
         num_worker_warps = self.const_param.num_worker_warps
@@ -84,7 +85,7 @@ class DispatchSendTask:
             if (thread_idx == 0):
                 recv_index = inline_ptx.atomic_add(local_token_send_count_per_expert[expert_idx, None], 1)
                 self.send_index_buffer[0] = recv_index
-            cute.arch.barrier(barrier_id=0, number_of_threads=num_worker_warps * 32)
+            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
             remote_index = self.send_index_buffer[0]
 
             remote_rank = expert_idx // num_local_experts
@@ -114,7 +115,7 @@ class DispatchSendTask:
                 
             thr_dst_vec.store(thr_src_vec.load())
 
-            cute.arch.barrier(barrier_id=0, number_of_threads=num_worker_warps * 32)
+            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
             
             # update the completion signal to a global sync buffer
             if (thread_idx == 0):

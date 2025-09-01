@@ -240,10 +240,6 @@ class SM100MPKIntraMoEKernel:
         
         scheduler = MPKScheduler(
             scheduler_warp_idx=self.num_warp-1, 
-            task_queue=kernel_param.mpk_task_queue,
-            task_consume_idx=kernel_param.mpk_task_consume_idx,
-            task_produce_idx=kernel_param.mpk_task_produce_idx,
-            task_barrier=kernel_param.mpk_task_barrier,
             smem_storage=storage,
             const_param=self.const_param,
             kernel_param=kernel_param,
@@ -251,12 +247,13 @@ class SM100MPKIntraMoEKernel:
         )
 
         # mega-kernel starts
-        test_num_work = 1
+        test_num_work = 2
         while(test_num_work > 0):
             scheduler.fetch_next_task()
             scheduler.sync_task()
             is_final_task = scheduler.execute_task()
             test_num_work -= 1
+            
 
     @cute.jit
     def dispatch_device(

@@ -68,6 +68,7 @@ class HistAll2AllTask:
         # kernel param
         rank_input_topk_indices = self.kernel_param.rank_input_topk_indices
         local_token_send_bar_expert = self.kernel_param.local_token_send_bar_expert
+        worker_sync_bar_id = self.const_param.worker_sync_bar_id
 
         # comm param:
         remote_buffer_ptr = self.kernel_param.remote_buffer_ptr
@@ -75,13 +76,13 @@ class HistAll2AllTask:
         # init smem buffer
         for expert_idx in range(thread_idx, 32, num_worker_warps * 32):
             self.expert_send_count[expert_idx, 0] = 0
-        cute.arch.barrier(barrier_id=0, number_of_threads=self.const_param.num_worker_warps * 32)
+        cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=self.const_param.num_worker_warps * 32)
         
         # get hist for each expert
         for element_idx in range(thread_idx, num_topk * num_tokens_per_rank, num_worker_warps * 32):
             expert_idx = rank_input_topk_indices[element_idx // num_topk, element_idx % num_topk]
             inline_ptx.red_add_shared_u32(self.expert_send_count[expert_idx, None], 1)
-        cute.arch.barrier(barrier_id=0, number_of_threads=self.const_param.num_worker_warps * 32)
+        cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=self.const_param.num_worker_warps * 32)
 
         # notify remote rank for the completion of token transfer
         # TODO(Zhihao): currently we bind tidx to expert idx for synchronization, might result in warp divergence
@@ -89,7 +90,7 @@ class HistAll2AllTask:
             expected_token_count = self.expert_send_count[expert_idx, 0]
             token_count = 0
             while(cutlass.dynamic_expr(token_count != expected_token_count)):
-                token_count = inline_ptx.ld_flag_relaxed_u32(local_token_send_bar_expert[expert_idx, None])
+                token_count = inline_ptx.ld_flag_relaxed_gpu_u32(local_token_send_bar_expert[expert_idx, None])
             remote_rank = expert_idx // num_local_experts
             remote_expert_idx = expert_idx % num_local_experts
             sync_tensor = self.get_count_buffer_ptr(remote_buffer_ptr, remote_rank, remote_expert_idx)

@@ -32,6 +32,8 @@ class ConstParam:
         self.swapAB = swapAB
         self.ffn_task_num = ffn_task_num
         self.mpk_queue_len = mpk_queue_len
+        self.token_tile_size = self.mma_tiler_mn[0] if not swapAB else self.mma_tiler_mn[1]
+        self.worker_sync_bar_id = 1
         
         # moe comm buffer const parameters
         self.token_buffer_offset_in_bytes = token_buffer_offset_in_bytes

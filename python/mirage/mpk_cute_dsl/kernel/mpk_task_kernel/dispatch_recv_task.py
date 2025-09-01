@@ -67,8 +67,10 @@ class DispatchRecvTask:
 
         local_buffer_ptr = self.kernel_param.local_buffer_ptr
         num_local_experts = self.const_param.num_local_experts
+        num_local_ranks = self.const_param.num_local_ranks
         num_worker_warps = self.const_param.num_worker_warps
-        ffn_task_num = self.const_param.ffn_task_num
+        token_tile_size = self.const_param.token_tile_size
+        worker_sync_bar_id = self.const_param.worker_sync_bar_id
 
         mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
         mpk_task_queue = self.kernel_param.mpk_task_queue
@@ -108,14 +110,12 @@ class DispatchRecvTask:
             )
             self.worker_sync_buffer[3] = arrived_group_count
 
-        cute.arch.barrier(barrier_id=0, number_of_threads=num_worker_warps * 32)
+        cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
 
         token_count = self.worker_sync_buffer[0]
         expert_start = self.worker_sync_buffer[1]
         token_start = self.worker_sync_buffer[2]
         arrived_group_count = self.worker_sync_buffer[3]
-        
-        # TODO(Zhihao): special case where the last arrived rank has no token at all
 
         for group_token_idx in range(thread_idx, token_count, num_worker_warps * 32):
             meta_tensor = self.get_dispatch_meta_ptr_buffer(
@@ -132,13 +132,19 @@ class DispatchRecvTask:
             src_token[token_idx] = group_token_idx # relative token index in the local group ([local_rank, local_expert_idx])
             src_index[token_idx] = meta_tensor[0] # original token index in the input sequence
             
+            last_tile_token_count = 0
+            if arrived_group_count == num_local_ranks - 1 and group_token_idx == token_count - 1:
+                last_tile_token_count = (expert_start + group_token_idx + 1) % token_tile_size # token count for the last ffn tile
+
             # add token gather task to the queue (one task per token)
-            token_gather_desc = cutlass.Uint32((MPKTask.kTokenGather.value << cutlass.Uint32(28)) | (token_idx << cutlass.Uint32(12)) | cutlass.Uint32(arrived_group_count))
+            token_gather_desc = cutlass.Uint32((MPKTask.kTokenGather.value << cutlass.Uint32(28)) | (token_idx << cutlass.Uint32(12)) | cutlass.Uint32(last_tile_token_count))
             task_write_idx = inline_ptx.atomic_add(
                 mpk_task_produce_idx,
                 cutlass.Int32(1),
             ) % cutlass.Int32(mpk_queue_len)
             inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], token_gather_desc)
+            
+        # TODO(Zhihao): special case where the last arrived rank has no token at all
 
     @cute.jit
     def make_global_tensor_from_buffer_ptr(

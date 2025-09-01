@@ -20,8 +20,8 @@ class TokenGatherTask:
             smem_storage: SharedStorage
         ):
         # Task Descripter Format:
-        # | 31 - 28 |  27 - 12  |       11 - 0      |
-        # | task_id | token_idx |  group_arrive_idx |
+        # | 31 - 28 |  27 - 12  |         11 - 0         |
+        # | task_id | token_idx |  last_tile_token_count |
         self.task_desc = task_desc
         self.profiler = profiler
         self.const_param = const_param
@@ -50,11 +50,11 @@ class TokenGatherTask:
     @cute.jit
     def token_gather(self):
         thread_idx, _, _ = cute.arch.thread_idx()
-        group_idx = (self.task_desc >> 7) & cutlass.Uint32(0x000000FF)
-        ffn_task_id = (self.task_desc) & cutlass.Uint32(0x0000007F)
+        token_idx = (self.task_desc >> 12) & cutlass.Uint32(0x0000FFFF)
+        last_tile_token_count = (self.task_desc) & cutlass.Uint32(0x00000FFF)
         
-        if thread_idx == 0:
-            cute.printf("you are here!")
+        # if thread_idx == 0:
+        #     cute.printf("token-{}, last_tile_token_count-{}", token_idx, last_tile_token_count)
 
         # token gather kernel here
         
