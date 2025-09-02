@@ -64,6 +64,7 @@ class MPKScheduler:
         warp_idx = cute.arch.warp_idx()
         warp_idx = cute.arch.make_warp_uniform(warp_idx)
         thread_idx, _, _ = cute.arch.thread_idx()
+        block_idx, _, _ = cute.arch.block_idx()
 
         mpk_queue_len = self.const_param.mpk_queue_len
         task_consume_idx = self.kernel_param.mpk_task_consume_idx
@@ -81,13 +82,13 @@ class MPKScheduler:
                 # peek
                 task_desc = inline_ptx.ld_flag_relaxed_gpu_u32(task_queue[task_load_idx, None])
                 task_code = task_desc >> 28
-                # # prefetch next task
-                # while(cutlass.dynamic_expr(task_code == 0)): 
-                #     # Wait task update if task_code == 0 (fetch)
-                #     # TODO(Zhihao): try ld.relax and also measure the overhead (might slow down works on other warps)
-                #     task_desc = inline_ptx.ld_flag_relaxed_gpu_u32(task_queue[task_load_idx, None])
-                #     task_code = task_desc >> 28
-                # # register -> smem task store from scheduler warp
+                # prefetch next task
+                while(cutlass.dynamic_expr(task_code == 0)): 
+                    # Wait task update if task_code == 0 (fetch)
+                    # TODO(Zhihao): try ld.relax and also measure the overhead (might slow down works on other warps)
+                    task_desc = inline_ptx.ld_flag_relaxed_gpu_u32(task_queue[task_load_idx, None])
+                    task_code = task_desc >> 28
+                # register -> smem task store from scheduler warp
                 self.task_sync_buffer[0] = task_desc
             cute.arch.sync_warp()
             self.profiler.profile_event(event_name="Fetch-Task", event_type="end") 

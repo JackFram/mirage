@@ -33,7 +33,7 @@ class DispatchRecvTask:
         self.task_name = "Dispatch-Recv"
 
         self.worker_sync_buffer = smem_storage.mpk_worker_sync_buffer.get_tensor(
-            cute.make_layout((1), stride=(1))
+            cute.make_layout((16), stride=(1))
         )
 
     def __extract_mlir_values__(self):
@@ -65,21 +65,20 @@ class DispatchRecvTask:
 
         group_idx = self.task_desc & cutlass.Uint32(0x00007FFF)
 
-        local_buffer_ptr = self.kernel_param.local_buffer_ptr
         num_local_experts = self.const_param.num_local_experts
         num_local_ranks = self.const_param.num_local_ranks
         num_worker_warps = self.const_param.num_worker_warps
         token_tile_size = self.const_param.token_tile_size
         worker_sync_bar_id = self.const_param.worker_sync_bar_id
-
-        mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
-        mpk_task_queue = self.kernel_param.mpk_task_queue
-        mpk_task_barrier = self.kernel_param.mpk_task_barrier
         mpk_queue_len = self.const_param.mpk_queue_len
+        tile_count_sync_id = self.const_param.tile_count_sync_offset
         
+        local_buffer_ptr = self.kernel_param.local_buffer_ptr
         num_tokens_per_local_expert_recv = self.kernel_param.num_tokens_per_local_expert_recv
         rank_token_count = self.kernel_param.rank_token_count
-        
+        mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
+        mpk_task_queue = self.kernel_param.mpk_task_queue
+        mpk_task_barrier = self.kernel_param.mpk_task_barrier 
         src_expert = self.kernel_param.src_expert
         src_offset = self.kernel_param.src_offset
         src_rank = self.kernel_param.src_rank
@@ -101,7 +100,14 @@ class DispatchRecvTask:
                 packed_count,
             ) 
             local_expert_offset = accumulated_packed_count >> 16
-            arrived_group_count = accumulated_packed_count & 0x0000FFFF
+            arrived_group_count = (accumulated_packed_count & 0x0000FFFF) + 1
+            
+            # update the tile count in the barrier for synchronization with the complete of ffn later
+            if arrived_group_count == num_local_ranks:
+                tile_count = (local_expert_offset + token_count + token_tile_size - 1) // token_tile_size
+                packed_tile_count = (tile_count << 24) | (1 << 16)
+                inline_ptx.atomic_add(mpk_task_barrier[tile_count_sync_id, None], packed_tile_count)
+            
             self.worker_sync_buffer[0] = token_count
             self.worker_sync_buffer[1] = local_expert_offset
             self.worker_sync_buffer[2] = inline_ptx.atomic_add(
@@ -131,9 +137,9 @@ class DispatchRecvTask:
             src_rank[token_idx] = local_rank # relative rank index in the local world
             src_token[token_idx] = group_token_idx # relative token index in the local group ([local_rank, local_expert_idx])
             src_index[token_idx] = meta_tensor[0] # original token index in the input sequence
-            
+
             last_tile_token_count = 0
-            if arrived_group_count == num_local_ranks - 1 and group_token_idx == token_count - 1:
+            if arrived_group_count == num_local_ranks and group_token_idx == token_count - 1:
                 last_tile_token_count = (expert_start + group_token_idx + 1) % token_tile_size # token count for the last ffn tile
 
             # add token gather task to the queue (one task per token)
@@ -144,7 +150,7 @@ class DispatchRecvTask:
             ) % cutlass.Int32(mpk_queue_len)
             inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], token_gather_desc)
             
-        # TODO(Zhihao): special case where the last arrived rank has no token at all
+        # TODO(Zhihao): special case where the last arrived rank has no token at all (token_count == 0)
 
     @cute.jit
     def make_global_tensor_from_buffer_ptr(

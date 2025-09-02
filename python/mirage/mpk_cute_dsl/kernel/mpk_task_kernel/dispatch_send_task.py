@@ -60,19 +60,19 @@ class DispatchSendTask:
         thread_idx, _, _ = cute.arch.thread_idx()
 
         token_idx = self.task_desc & cutlass.Uint32(0x0000007F)
+        
+        worker_sync_bar_id = self.const_param.worker_sync_bar_id
+        thr_tile_shape = self.const_param.thr_tile_shape
+        num_topk = self.const_param.num_topk
+        num_worker_warps = self.const_param.num_worker_warps
+        num_local_experts = self.const_param.num_local_experts
 
         remote_buffer_ptr = self.kernel_param.remote_buffer_ptr
         rank_input_tensor = self.kernel_param.rank_input_tensor
         rank_input_topk_indices = self.kernel_param.rank_input_topk_indices
         local_token_send_count_per_expert = self.kernel_param.local_token_send_count_per_expert
         local_token_send_bar_expert = self.kernel_param.local_token_send_bar_expert
-        worker_sync_bar_id = self.const_param.worker_sync_bar_id
-
-        thr_tile_shape = self.const_param.thr_tile_shape
-        num_topk = self.const_param.num_topk
-        num_worker_warps = self.const_param.num_worker_warps
-        num_local_experts = self.const_param.num_local_experts
-
+        
         thr_tiled_rank_input_tensor = cute.zipped_divide(rank_input_tensor, thr_tile_shape)
         thr_src_vec = thr_tiled_rank_input_tensor[(None, (token_idx, thread_idx))]
 

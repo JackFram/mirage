@@ -138,8 +138,6 @@ class SM100MPKIntraMoEKernel:
         self.count_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16
         self.token_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16 + cutlass.cute.round_up(self.num_local_experts * 4, 16)
 
-        self.ffn_task_num = self.moe_param.inter_dim // self.moe_param.mma_tiler_mn[1]
-
         self.thr_tile_shape = (1, self.hidden_dim//(32 * self.num_worker_warp))
         self.const_param = ConstParam(
             hidden_dim=self.hidden_dim,
@@ -158,8 +156,8 @@ class SM100MPKIntraMoEKernel:
             thr_tile_shape=self.thr_tile_shape,
             mma_tiler_mn=self.moe_param.mma_tiler_mn,
             swapAB=self.moe_param.swapAB,
-            ffn_task_num=self.ffn_task_num,
             mpk_queue_len=self.mpk_queue_len,
+            num_workers=self.num_workers,
         )
     
     @cute.jit
@@ -232,11 +230,6 @@ class SM100MPKIntraMoEKernel:
             buffer_size=self.profiler_buffer_size,
             profiler_enabled=self.profiler_enabled
         )
-
-        block_idx, _, _ = cute.arch.block_idx()
-        thread_idx, _, _ = cute.arch.thread_idx()
-        warp_idx = cute.arch.warp_idx()
-        warp_idx = cute.arch.make_warp_uniform(warp_idx)
         
         scheduler = MPKScheduler(
             scheduler_warp_idx=self.num_warp-1, 
@@ -246,185 +239,17 @@ class SM100MPKIntraMoEKernel:
             profiler=profiler,
         )
 
+        # TODO(Zhihao): test terminate task here:
+
+        # thread_idx, _, _ = cute.arch.thread_idx()
+        # block_idx, _, _ = cute.arch.block_idx()
+        
         # mega-kernel starts
-        test_num_work = 2
-        while(test_num_work > 0):
+        is_final_task = False
+        while(cutlass.dynamic_expr(is_final_task == False)):
             scheduler.fetch_next_task()
             scheduler.sync_task()
             is_final_task = scheduler.execute_task()
-            test_num_work -= 1
-            
-
-    @cute.jit
-    def dispatch_device(
-        self,
-        # input tensors
-        rank_input_tensor: cute.Tensor,
-        rank_input_topk_indices: cute.Tensor,
-        # output tensor
-        num_tokens_per_local_expert_recv: cute.Tensor,
-        local_token_send_count_per_expert: cute.Tensor,
-        rank_token_count: cute.Tensor,
-        dispatch_recv_token_tensor: cute.Tensor,
-        # buffer ptr
-        local_buffer_ptr: cute.Tensor,
-        remote_buffer_ptr: cute.Tensor,
-        # meta info tensors
-        recv_num_token_per_rank: cute.Tensor,
-        src_index: cute.Tensor,
-        src_expert: cute.Tensor,
-        src_offset: cute.Tensor,
-        src_rank: cute.Tensor,
-        src_token: cute.Tensor,
-    ):
-        # dispatch send
-
-        thread_idx, _, _ = cute.arch.thread_idx()
-        block_idx, _, _ = cute.arch.block_idx()
-        block_dim, _, _ = cute.arch.block_dim()
-        num_sm, _, _ = cute.arch.grid_dim()
-
-        for rank_idx in range(block_idx * block_dim + thread_idx, self.num_local_ranks, num_sm * block_dim):
-            sync_tensor = self.get_dispatch_sync_buffer(remote_buffer_ptr, rank_idx)
-            inline_ptx.st_flag_volatile(sync_tensor, cutlass.Uint32(1))  # set the flag to 1 to indicate the dispatch starts
-
-        for token_idx in range(block_idx, self.num_tokens_per_rank, num_sm):
-
-            thr_tiled_rank_input_tensor = cute.zipped_divide(rank_input_tensor, self.thr_tile_shape)
-            thr_src_vec = thr_tiled_rank_input_tensor[(None, (token_idx, thread_idx))]
-
-            for topk_idx in cutlass.range_constexpr(0, self.moe_param.num_topk, 1):
-
-                # Get the local expert index
-                expert_idx = rank_input_topk_indices[token_idx, topk_idx]
-                
-                # Get the synchronized index for sending tokens
-                if (thread_idx == 0):
-                    recv_index = inline_ptx.atomic_add(local_token_send_count_per_expert[expert_idx, None], 1)
-                    self.send_index_buffer[0] = recv_index
-                cute.arch.sync_threads()
-                remote_index = self.send_index_buffer[0]
-
-                remote_rank = expert_idx // self.num_local_experts
-                remote_expert_idx = expert_idx % self.num_local_experts
-
-                remote_tensor = self.get_dispatch_token_ptr_buffer(
-                    remote_buffer_ptr,
-                    remote_rank,
-                    remote_expert_idx,
-                    remote_index,
-                )
-
-                meta_tensor = self.get_dispatch_meta_ptr_buffer(
-                    remote_buffer_ptr,
-                    remote_rank,
-                    remote_expert_idx,
-                    remote_index,
-                )
-
-                if (thread_idx == 0):
-                    # Store the meta data
-                    meta_tensor[0] = cutlass.Int32(token_idx)  # token index
-
-
-                thr_tiled_rank_recv_tensor = cute.zipped_divide(remote_tensor, self.thr_tile_shape)
-                thr_dst_vec = thr_tiled_rank_recv_tensor[(None, (0, thread_idx))]
-                    
-                thr_dst_vec.store(thr_src_vec.load())
-
-                cute.arch.sync_threads()
-
-        # grid_sync
-
-        self.grid_sync()
-
-        # send token count to remote buffer
-
-        for expert_idx in range(block_idx * block_dim + thread_idx, self.moe_param.num_experts, num_sm * block_dim):
-            remote_rank = expert_idx // self.num_local_experts
-            remote_expert_idx = expert_idx % self.num_local_experts
-            sync_tensor = self.get_count_buffer_ptr(remote_buffer_ptr, remote_rank, remote_expert_idx)
-            inline_ptx.st_flag_release(sync_tensor, local_token_send_count_per_expert[expert_idx, 0] + 1)  # use the token count as the flag to indicate the dispatch send is done
-            # cute.printf(">??-[send-{}] remote_rank: {}, remote_expert_idx: {}, token_count: {}", self.dist_param.local_rank, remote_rank, remote_expert_idx, local_token_send_count_per_expert[expert_idx])
-
-        # dispatch recv
-
-        # 1. use ld_acquire to wait for the token to be sent and collect meta info
-        for recv_group_idx in range(block_idx, self.num_local_experts * self.num_local_ranks, num_sm):
-
-            local_rank = recv_group_idx // self.num_local_experts
-            local_expert_idx = recv_group_idx % self.num_local_experts
-            
-            if (thread_idx == 0): 
-                count_tensor = self.get_count_buffer_ptr(local_buffer_ptr, local_rank, local_expert_idx)
-                token_count = 0
-                while(cutlass.dynamic_expr(token_count == 0)):
-                    token_count = inline_ptx.ld_flag_acquire(count_tensor)
-                inline_ptx.st_flag_release(count_tensor, cutlass.Int32(0))  # reset the flag to 0
-                token_count -= 1
-
-                recv_num_token_per_rank[recv_group_idx] = token_count
-
-                self.block_expert_start_index[recv_group_idx] = inline_ptx.atomic_add(
-                    num_tokens_per_local_expert_recv[local_expert_idx, None],
-                    token_count,
-                )
-
-                self.block_token_start_index[recv_group_idx] = inline_ptx.atomic_add(
-                    rank_token_count,
-                    token_count,
-                )
-
-            cute.arch.sync_threads()
-
-            token_count = recv_num_token_per_rank[recv_group_idx]
-            expert_start = self.block_expert_start_index[recv_group_idx]
-            token_start = self.block_token_start_index[recv_group_idx]
-
-            for group_token_idx in range(thread_idx, token_count, block_dim):
-                meta_tensor = self.get_dispatch_meta_ptr_buffer(
-                    local_buffer_ptr,
-                    local_rank,
-                    local_expert_idx,
-                    group_token_idx,
-                )
-
-                token_idx = token_start + group_token_idx  # absolute index of the token in the rank
-                src_expert[token_idx] = local_expert_idx # relative expert index in the local rank
-                src_offset[token_idx] = expert_start + group_token_idx # relative token index in the local expert
-                src_rank[token_idx] = local_rank # relative rank index in the local world
-                src_token[token_idx] = group_token_idx # relative token index in the local group ([local_rank, local_expert_idx])
-                src_index[token_idx] = meta_tensor[0]
-
-        self.grid_sync()
-
-        # if(block_idx == 0 and thread_idx == 0):
-        #     cute.printf(">??-[recv-{}] rank_token_count: {}", self.dist_param.local_rank, rank_token_count[0])
-
-        # 2. cp from local buffer to output tensor (token parallel)
-        for recv_token_idx in range(block_idx, rank_token_count[0], num_sm):
-            dst_expert_offset = src_offset[recv_token_idx]
-            dst_expert = src_expert[recv_token_idx]
-
-            local_buffer_tensor = self.get_dispatch_token_ptr_buffer(
-                    local_buffer_ptr,
-                    src_rank[recv_token_idx],
-                    dst_expert,
-                    src_token[recv_token_idx],
-                )
-            tiled_src_tensor = cute.zipped_divide(local_buffer_tensor, self.thr_tile_shape)
-            thr_src_vec = tiled_src_tensor[(None, (0, thread_idx))]
-
-            dst_tensor = dispatch_recv_token_tensor[(dst_expert, dst_expert_offset, None, None)]
-            tiled_dst_tensor = cute.zipped_divide(dst_tensor, self.thr_tile_shape)
-            thr_dst_vec = tiled_dst_tensor[(None, (0, thread_idx))]
-            thr_dst_vec.store(thr_src_vec.load())
-
-        self.grid_sync()
-
-        for rank_idx in range(block_idx * block_dim + thread_idx, self.num_local_ranks, num_sm * block_dim):
-            sync_tensor = self.get_dispatch_sync_buffer(remote_buffer_ptr, rank_idx)
-            inline_ptx.st_flag_volatile(sync_tensor, cutlass.Uint32(0))  # set the flag to 0 to indicate the dispatch finishes
 
     @cute.jit
     def combine_device(
