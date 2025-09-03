@@ -109,8 +109,8 @@ class DispatchSendTask:
                 # Store the meta data
                 meta_tensor[0] = cutlass.Int32(token_idx)  # token index
 
-
             thr_tiled_rank_recv_tensor = cute.zipped_divide(remote_tensor, thr_tile_shape)
+            
             thr_dst_vec = thr_tiled_rank_recv_tensor[(None, (0, thread_idx))]
                 
             thr_dst_vec.store(thr_src_vec.load())

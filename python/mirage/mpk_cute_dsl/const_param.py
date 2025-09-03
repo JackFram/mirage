@@ -2,10 +2,14 @@ import cutlass
 import cutlass.cute as cute
 import torch
 import math
+from typing import Type
+from cutlass.cute.nvgpu import tcgen05
+import cutlass.utils as utils
 
 class ConstParam:
     def __init__(
             self, 
+            # MoE param
             hidden_dim: cutlass.Constexpr[int],
             hidden_dim_in_bytes: cutlass.Constexpr[int],
             inter_dim: cutlass.Constexpr[int],
@@ -18,12 +22,18 @@ class ConstParam:
             token_buffer_offset_in_bytes: cutlass.Constexpr[int],
             count_buffer_offset_in_bytes: cutlass.Constexpr[int],
             dispatch_token_stride: cutlass.Constexpr[int],
+            # mpk param
             mpk_queue_len: cutlass.Constexpr[int],
             num_worker_warps: cutlass.Constexpr[int],
+            num_workers: cutlass.Constexpr[int],
+            # gemm param
             thr_tile_shape: tuple[int, int],
             mma_tiler_mn: tuple[int, int],
             swapAB: bool,
-            num_workers: cutlass.Constexpr[int],
+            acc_dtype: cutlass.Constexpr[cutlass.Numeric],
+            use_2cta_instrs: bool,
+            cluster_shape_mn: tuple[int, int],
+            tensormap_update_mode: cutlass.utils.TensorMapUpdateMode,
         ):
         
         # kernel const parameters
@@ -39,6 +49,45 @@ class ConstParam:
         self.token_tile_per_expert = math.ceil((num_tokens_per_rank * num_local_ranks) / self.token_tile_size)
         self.ffn_w13_task_num = math.ceil(inter_dim / self.k_tile_size)
         self.ffn_w2_task_num = math.ceil(hidden_dim / self.k_tile_size)
+
+        # gemm const parameters
+        self.acc_dtype: Type[cutlass.Numeric] = acc_dtype
+        self.use_2cta_instrs = use_2cta_instrs
+        self.cluster_shape_mn = cluster_shape_mn
+        # K dimension is deferred in _setup_attributes
+        self.mma_tiler = (*mma_tiler_mn, 1)
+        self.cta_group = (
+            tcgen05.CtaGroup.TWO if use_2cta_instrs else tcgen05.CtaGroup.ONE
+        )
+
+        self.tensormap_update_mode = tensormap_update_mode
+        self.delegate_tensormap_ab_init = (
+            tensormap_update_mode == utils.TensorMapUpdateMode.SMEM
+        )
+
+        self.num_mcast_ctas_a = 1
+        self.num_mcast_ctas_b = 1
+        self.is_a_mcast = False
+        self.is_b_mcast = False
+
+        self.occupancy = 1
+
+        self.epilog_warp_id = (
+            0,
+            1,
+            2,
+            3,
+        )
+        self.mma_warp_id = 4
+        self.tma_warp_id = 5
+        self.scheduler_warp_id = 8
+
+        # Set barrier id for cta sync, epilog sync, tmem ptr sync and tensormap update sync
+        self.cta_sync_bar_id = 2
+        self.epilog_sync_bar_id = 3
+        self.tmem_ptr_sync_bar_id = 4
+        self.tensormap_ab_init_bar_id = 5
+        self.num_tma_load_bytes = 0
 
         # moe comm buffer const parameters
         self.token_buffer_offset_in_bytes = token_buffer_offset_in_bytes

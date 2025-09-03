@@ -40,7 +40,7 @@ class MPKScheduler:
         )
 
     def __extract_mlir_values__(self):
-        # TODO(Zhihao): remove this when hearing back from cute-dsl team
+        # TODO(revisit): do we need to add MLIR for all members here?
         profiler_values = extract_mlir_values(self.profiler)
         values = [profiler_values[0][0], profiler_values[1][0]]
         return values

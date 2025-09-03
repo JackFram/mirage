@@ -25,7 +25,6 @@ from mpk_cute_dsl.const_param import ConstParam
 A persistent MoE kernel (dispatch+FFN+combine) with cute DSL on blackwell (SM100).
 TODO(Zhihao): 
   1. Create a customized buffer class for moe communication buffer management
-  2. Add the all dummy tasks including termination task logic
 """
 
 class SM100MPKIntraMoEKernel:
@@ -70,48 +69,6 @@ class SM100MPKIntraMoEKernel:
         self.num_workers = sm_count # 148 for blackwell
         
         self.buffer_size_in_bytes: cutlass.Constexpr[int] = max(self.get_combine_buffer_size(), self.get_dispatch_buffer_size())
-
-        # FFN attributes
-        # Set specialized warp ids
-        self.acc_dtype: Type[cutlass.Numeric] = moe_param.acc_dtype
-        self.use_2cta_instrs = moe_param.use_2cta_instrs
-        self.cluster_shape_mn = moe_param.cluster_shape_mn
-        # K dimension is deferred in _setup_attributes
-        self.mma_tiler = (*moe_param.mma_tiler_mn, 1)
-        self.cta_group = (
-            tcgen05.CtaGroup.TWO if moe_param.use_2cta_instrs else tcgen05.CtaGroup.ONE
-        )
-
-        self.tensormap_update_mode = moe_param.tensormap_update_mode
-        # Delegate tensormap ab initialization to MMA warp when SMEM mode is used for better latency hiding
-        self.delegate_tensormap_ab_init = (
-            moe_param.tensormap_update_mode == utils.TensorMapUpdateMode.SMEM
-        )
-
-        self.num_mcast_ctas_a = 1
-        self.num_mcast_ctas_b = 1
-        self.is_a_mcast = False
-        self.is_b_mcast = False
-
-        self.occupancy = 1
-
-        self.epilog_warp_id = (
-            0,
-            1,
-            2,
-            3,
-        )
-        self.mma_warp_id = 4
-        self.tma_warp_id = 5
-        self.scheduler_warp_id = 8
-
-        # Set barrier id for cta sync, epilog sync, tmem ptr sync and tensormap update sync
-        self.cta_sync_bar_id = 0
-        self.epilog_sync_bar_id = 1
-        self.tmem_ptr_sync_bar_id = 2
-        # Barrier ID used by MMA/TMA warps to signal A/B tensormap initialization completion
-        self.tensormap_ab_init_bar_id = 4
-        self.num_tma_load_bytes = 0
     
     def get_dispatch_buffer_size(self):
         size = 0
@@ -139,6 +96,7 @@ class SM100MPKIntraMoEKernel:
         self.token_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16 + cutlass.cute.round_up(self.num_local_experts * 4, 16)
 
         self.thr_tile_shape = (1, self.hidden_dim//(32 * self.num_worker_warp))
+        
         self.const_param = ConstParam(
             hidden_dim=self.hidden_dim,
             hidden_dim_in_bytes=self.hidden_dim_in_bytes,
@@ -158,6 +116,10 @@ class SM100MPKIntraMoEKernel:
             swapAB=self.moe_param.swapAB,
             mpk_queue_len=self.mpk_queue_len,
             num_workers=self.num_workers,
+            acc_dtype=self.moe_param.acc_dtype,
+            use_2cta_instrs=self.moe_param.use_2cta_instrs,
+            cluster_shape_mn=self.moe_param.cluster_shape_mn,
+            tensormap_update_mode=self.moe_param.tensormap_update_mode,
         )
     
     @cute.jit
@@ -238,8 +200,6 @@ class SM100MPKIntraMoEKernel:
             kernel_param=kernel_param,
             profiler=profiler,
         )
-
-        # TODO(Zhihao): test terminate task here:
 
         # thread_idx, _, _ = cute.arch.thread_idx()
         # block_idx, _, _ = cute.arch.block_idx()

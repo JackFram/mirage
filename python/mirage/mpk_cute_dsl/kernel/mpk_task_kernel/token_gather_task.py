@@ -70,6 +70,7 @@ class TokenGatherTask:
         token_tile_size = self.const_param.token_tile_size
         gemm_tile_bar_offset = self.const_param.gemm_tile_bar_offset
         ffn_w13_task_num = self.const_param.ffn_w13_task_num
+        hidden_dim = self.const_param.hidden_dim
 
         src_expert = self.kernel_param.src_expert
         src_offset = self.kernel_param.src_offset
@@ -96,7 +97,10 @@ class TokenGatherTask:
         tiled_src_tensor = cute.zipped_divide(local_buffer_tensor, thr_tile_shape)
         thr_src_vec = tiled_src_tensor[(None, (0, thread_idx))]
 
-        dst_tensor = dispatch_recv_token_tensor[(dst_expert, dst_expert_offset, None, None)]
+        dst_tensor = dispatch_recv_token_tensor[(dst_expert, dst_expert_offset, None)]
+        # TODO(revisit): find a better way to deal with tile_divide if the overhead is non-negligible
+        dst_tensor = cute.make_tensor(dst_tensor.iterator, cute.make_layout((1, hidden_dim), stride=(hidden_dim, 1)))
+        # fix here by casting the layout
         tiled_dst_tensor = cute.zipped_divide(dst_tensor, thr_tile_shape)
         thr_dst_vec = tiled_dst_tensor[(None, (0, thread_idx))]
         thr_dst_vec.store(thr_src_vec.load())
@@ -116,9 +120,8 @@ class TokenGatherTask:
             # last token that launch the fused ffn task
             else:
                 # cute.printf("expert-{}, relative offset-{}, tile_group_sync_id-{}, arrived_token_count-{}, expected_token_count-{}", dst_expert, dst_expert_offset, tile_group_sync_id, arrived_token_count, last_tile_token_count)
-                # TODO(Zhihao): uncomment this
-                # while(cutlass.dynamic_expr(arrived_token_count != last_tile_token_count)):
-                #     arrived_token_count = inline_ptx.ld_flag_relaxed_gpu_u32(mpk_task_barrier[tile_group_sync_id, None])
+                while(cutlass.dynamic_expr(arrived_token_count != last_tile_token_count)):
+                    arrived_token_count = inline_ptx.ld_flag_relaxed_gpu_u32(mpk_task_barrier[tile_group_sync_id, None])
                 self.worker_sync_buffer[0] = 1
 
         cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)

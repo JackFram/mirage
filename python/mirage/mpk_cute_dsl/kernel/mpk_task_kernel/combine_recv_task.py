@@ -40,4 +40,13 @@ class CombineRecvTask:
     @cute.jit
     def execute(self):
         # Execute the combine receive task
+        self.profiler.profile_event(event_name="Combine-Recv", event_type="begin")
+        self.combine_recv()
+        self.profiler.profile_event(event_name="Combine-Recv", event_type="end")
+    
+    @cute.jit
+    def combine_recv(self):
+        # Combine the received tokens from different ranks
+        thread_idx, _, _ = cute.arch.thread_idx()
+        token_id = (self.task_desc) & cutlass.Uint32(0x0000FFFF)
         pass

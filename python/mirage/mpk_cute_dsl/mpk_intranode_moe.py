@@ -95,22 +95,27 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     ).fill_(0).cuda()
 
     dispatch_recv_token_tensor = torch.empty(
-        (num_local_experts, num_tokens, 1, hidden_dim),
+        (num_local_experts, num_tokens, hidden_dim),
         dtype=torch_dtype(moe_param.in_dtype),
-    ).fill_(0).cuda()
+    ).fill_(0).cuda() # also the input for the ffn fused w13 task
 
     '''
     ffn_grouped_gemm
     '''
-    w1_tensor = torch.randn(hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
-    w2_tensor = torch.randn(inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
-    w3_tensor = torch.randn(hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
+    w1_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
+    w2_tensor = torch.randn(num_local_experts, inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
+    w3_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
+
+    ffn_fused_w13_output_tensor = torch.empty(
+        (num_local_experts, num_tokens, inter_dim),
+        dtype=torch_dtype(moe_param.in_dtype),
+    ).fill_(0).cuda() # also the input for the ffn fused w13 task
 
     '''
     combine
     '''
     combine_send_token_tensor = torch.randn(
-        (num_local_experts, num_tokens, 1, hidden_dim),
+        (num_local_experts, num_tokens, hidden_dim),
         dtype=torch_dtype(moe_param.out_dtype),
     ).cuda()
 
@@ -125,6 +130,7 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     topk_indices_cute = from_dlpack(topk_indices, assumed_align=16)
     num_tokens_per_local_expert_recv_cute = from_dlpack(num_tokens_per_local_expert_recv, assumed_align=16)
     dispatch_recv_token_tensor_cute = from_dlpack(dispatch_recv_token_tensor, assumed_align=16)
+    ffn_fused_w13_output_tensor_cute = from_dlpack(ffn_fused_w13_output_tensor, assumed_align=16)
     combine_send_token_tensor_cute = from_dlpack(combine_send_token_tensor, assumed_align=16)
     output_tensor_cute = from_dlpack(output_tensor, assumed_align=16)
     local_token_send_count_per_expert_cute = from_dlpack(local_token_send_count_per_expert, assumed_align=16)
@@ -193,6 +199,7 @@ def reset_tensors(dist_param: ProcessGroupInfo):
             rank_token_count=rank_token_count_cute,
             dispatch_recv_token_tensor=dispatch_recv_token_tensor_cute,
             combine_send_token_tensor=combine_send_token_tensor_cute,
+            ffn_fused_w13_output_tensor=ffn_fused_w13_output_tensor_cute,
             output_tensor=output_tensor_cute,
             local_buffer_ptr=local_buffer_ptr_cute,
             remote_buffer_ptr=remote_buffer_ptr_cute,
