@@ -102,9 +102,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     '''
     ffn_grouped_gemm
     '''
-    w1_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
+    w13_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim * 2, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
     w2_tensor = torch.randn(num_local_experts, inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
-    w3_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
 
     ffn_fused_w13_output_tensor = torch.empty(
         (num_local_experts, num_tokens, inter_dim),
@@ -144,9 +143,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     src_rank_cute = from_dlpack(src_rank, assumed_align=16)
     src_token_cute = from_dlpack(src_token, assumed_align=16)
 
-    w1_tensor_cute = from_dlpack(w1_tensor, assumed_align=16)
+    w13_tensor_cute = from_dlpack(w13_tensor, assumed_align=16)
     w2_tensor_cute = from_dlpack(w2_tensor, assumed_align=16)
-    w3_tensor_cute = from_dlpack(w3_tensor, assumed_align=16)
     
     mpk_task_queue_cute = from_dlpack(mpk_task_queue, assumed_align=16)
     mpk_task_consume_idx_cute = from_dlpack(mpk_task_consume_idx, assumed_align=16)
@@ -191,6 +189,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
 
     # setup kernel param
     kernel_param = MoEKernelParam(
+            w13_tensor=w13_tensor_cute,
+            w2_tensor=w2_tensor_cute,
             rank_input_tensor=input_tensor_cute,
             rank_input_topk_indices=topk_indices_cute,
             num_tokens_per_local_expert_recv=num_tokens_per_local_expert_recv_cute,

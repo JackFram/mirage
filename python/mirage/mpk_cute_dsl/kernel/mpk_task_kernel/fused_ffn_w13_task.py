@@ -4,7 +4,7 @@ import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
-from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
+
 from mpk_cute_dsl.const_param import ConstParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
@@ -20,7 +20,7 @@ class FusedFFNW13Task:
             profiler: DslProfiler, 
             const_param: ConstParam, 
             kernel_param: MoEKernelParam, 
-            smem_storage: SharedStorage
+            smem_storage: cute.core.struct
         ):
         # Task Descripter Format:
         # | 31 - 28 |   23 - 16  |  15 - 8  |    7 - 0    |

@@ -29,6 +29,7 @@ class ConstParam:
             # gemm param
             thr_tile_shape: tuple[int, int],
             mma_tiler_mn: tuple[int, int],
+            occupancy: cutlass.Constexpr[int],
             swapAB: bool,
             acc_dtype: cutlass.Constexpr[cutlass.Numeric],
             use_2cta_instrs: bool,
@@ -70,7 +71,7 @@ class ConstParam:
         self.is_a_mcast = False
         self.is_b_mcast = False
 
-        self.occupancy = 1
+        self.occupancy = occupancy
 
         self.epilog_warp_id = (
             0,

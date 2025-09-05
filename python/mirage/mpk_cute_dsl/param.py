@@ -11,6 +11,9 @@ from cutlass._mlir import ir
 class MoEKernelParam:
     def __init__(
             self,
+            # weight tensors
+            w13_tensor: cute.Tensor,
+            w2_tensor: cute.Tensor,
             # input/output tensors
             rank_input_tensor: cute.Tensor,
             rank_input_topk_indices: cute.Tensor,
@@ -39,6 +42,8 @@ class MoEKernelParam:
             mpk_task_produce_idx: cute.Tensor,
             mpk_task_barrier: cute.Tensor,
     ):
+        self.w13_tensor = w13_tensor
+        self.w2_tensor = w2_tensor
         self.rank_input_tensor = rank_input_tensor
         self.rank_input_topk_indices = rank_input_topk_indices
         self.num_tokens_per_local_expert_recv = num_tokens_per_local_expert_recv
@@ -65,6 +70,8 @@ class MoEKernelParam:
 
     def __c_pointers__(self):
         pointers = []
+        pointers.extend(get_c_pointers(self.w13_tensor))
+        pointers.extend(get_c_pointers(self.w2_tensor))
         pointers.extend(get_c_pointers(self.rank_input_tensor))
         pointers.extend(get_c_pointers(self.rank_input_topk_indices))
         pointers.extend(get_c_pointers(self.num_tokens_per_local_expert_recv))  
@@ -92,6 +99,8 @@ class MoEKernelParam:
 
     def __extract_mlir_values__(self):
         values = []
+        values.extend(extract_mlir_values(self.w13_tensor))
+        values.extend(extract_mlir_values(self.w2_tensor))
         values.extend(extract_mlir_values(self.rank_input_tensor))
         values.extend(extract_mlir_values(self.rank_input_topk_indices))
         values.extend(extract_mlir_values(self.num_tokens_per_local_expert_recv))
@@ -119,6 +128,8 @@ class MoEKernelParam:
     
     def __get_mlir_types__(self):
         values = []
+        values.extend(get_mlir_types(self.w13_tensor))
+        values.extend(get_mlir_types(self.w2_tensor))
         values.extend(get_mlir_types(self.rank_input_tensor))
         values.extend(get_mlir_types(self.rank_input_topk_indices))
         values.extend(get_mlir_types(self.num_tokens_per_local_expert_recv))
@@ -145,8 +156,16 @@ class MoEKernelParam:
         return values
 
     def __new_from_mlir_values__(self, values: list[ir.Value]) -> "MoEKernelParam":
-        assert len(values) == 23
+        assert len(values) == 25
         value_idx = 0
+        new_w13_tensor = new_from_mlir_values(
+            self.w13_tensor, [values[value_idx]]
+        )
+        value_idx += 1
+        new_w2_tensor = new_from_mlir_values(
+            self.w2_tensor, [values[value_idx]]
+        )
+        value_idx += 1
         new_rank_input_tensor = new_from_mlir_values(
             self.rank_input_tensor, [values[value_idx]]
         )
@@ -239,6 +258,8 @@ class MoEKernelParam:
             self.mpk_task_barrier, [values[value_idx]]
         )
         return MoEKernelParam(
+            new_w13_tensor,
+            new_w2_tensor,
             new_rank_input_tensor,
             new_rank_input_topk_indices,
             new_num_tokens_per_local_expert_recv,

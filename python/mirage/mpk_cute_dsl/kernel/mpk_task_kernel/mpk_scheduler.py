@@ -11,7 +11,7 @@ from mpk_cute_dsl.kernel.mpk_task_kernel import *
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
-from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
+
 from mpk_cute_dsl.const_param import ConstParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
@@ -23,7 +23,7 @@ class MPKScheduler:
     def __init__(
             self, 
             scheduler_warp_idx: cutlass.Constexpr[int], 
-            smem_storage: SharedStorage,
+            smem_storage: cute.core.struct,
             const_param: ConstParam,
             kernel_param: MoEKernelParam,
             profiler: DslProfiler,

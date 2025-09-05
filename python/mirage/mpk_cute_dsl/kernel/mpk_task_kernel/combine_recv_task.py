@@ -2,7 +2,6 @@ import cutlass.cute as cute
 import cutlass
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
-from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
 from mpk_cute_dsl.const_param import ConstParam
 
 from cutlass.cutlass_dsl import (
@@ -17,7 +16,7 @@ class CombineRecvTask:
             profiler: DslProfiler, 
             const_param: ConstParam, 
             kernel_param: MoEKernelParam, 
-            smem_storage: SharedStorage
+            smem_storage: cute.core.struct
         ):
         self.task_desc = task_desc
         self.profiler = profiler

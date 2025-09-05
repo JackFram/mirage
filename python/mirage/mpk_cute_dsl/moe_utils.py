@@ -15,7 +15,9 @@ class MoEParam:
     # Grouped GEMM parameters
     acc_dtype: torch.dtype = cutlass.Float32
     use_2cta_instrs: bool = False
+    use_tma_store: bool = True
     swapAB: bool = True
     mma_tiler_mn: tuple[int, int] = (128, 64)
     cluster_shape_mn: tuple[int, int] = (1, 1)
     tensormap_update_mode: utils.TensorMapUpdateMode = utils.TensorMapUpdateMode.SMEM
+    occupancy: int = 1

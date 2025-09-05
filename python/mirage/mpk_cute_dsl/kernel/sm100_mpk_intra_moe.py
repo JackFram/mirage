@@ -13,10 +13,11 @@ from cutlass.torch import dtype as torch_dtype
 
 from mpk_cute_dsl.moe_utils import MoEParam
 from mpk_cute_dsl.dist_utils import ProcessGroupInfo
+from mpk_cute_dsl.kernel.gemm_utils import *
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_scheduler import MPKScheduler
-from mpk_cute_dsl.kernel.mpk_task_kernel.smem_storage import SharedStorage
+
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
 from mpk_cute_dsl.const_param import ConstParam
@@ -90,12 +91,145 @@ class SM100MPKIntraMoEKernel:
 
 
     def _setup_attributes(self):
+        # setting up attributes for dispatch and combine
         self.dispatch_buffer_offset_in_bytes: cutlass.Constexpr[int] = 0
         self.combine_buffer_offset_in_bytes: cutlass.Constexpr[int] = 4
         self.count_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16
         self.token_buffer_offset_in_bytes: cutlass.Constexpr[int] = 16 + cutlass.cute.round_up(self.num_local_experts * 4, 16)
-
+        # For dispatch and combine
         self.thr_tile_shape = (1, self.hidden_dim//(32 * self.num_worker_warp))
+        # Group GeMM attributes
+        """Set up configurations that are dependent on GEMM inputs
+
+        This method configures various attributes based on the input tensor properties
+        (data types, leading dimensions) and kernel settings:
+        - Configuring tiled MMA
+        - Computing MMA/cluster/tile shapes
+        - Computing cluster layout
+        - Computing multicast CTAs for Weight/Input
+        - Computing epilogue subtile
+        - Setting up Weight/Input/Output stage counts in shared memory
+        - Computing Weight/Input/Output shared memory layout
+        - Computing tensor memory allocation columns
+        """
+
+        if self.moe_param.swapAB:
+            a_dtype = self.w_dtype
+            b_dtype = self.i_dtype
+            a_major_mode = self.w_major_mode
+            b_major_mode = self.i_major_mode
+            c_major_mode = self.o_layout.mma_major_mode()
+        else:
+            a_dtype = self.i_dtype
+            b_dtype = self.w_dtype
+            a_major_mode = self.i_major_mode
+            b_major_mode = self.w_major_mode
+            c_major_mode = self.o_layout.mma_major_mode()
+            
+        assert not self.moe_param.use_2cta_instrs, "we don't use 2cta instrs for MPK MoE currently"
+
+        cta_group = (
+            tcgen05.CtaGroup.TWO if self.moe_param.use_2cta_instrs else tcgen05.CtaGroup.ONE
+        )
+
+        mma_tiler = (*self.moe_param.mma_tiler_mn, 1)
+
+        # Configure tiled mma
+        tiled_mma = sm100_utils.make_trivial_tiled_mma(
+            a_dtype,
+            a_major_mode,
+            b_major_mode,
+            self.moe_param.acc_dtype,
+            cta_group,
+            mma_tiler[:2],
+        )
+
+        mma_inst_shape_k = cute.size(tiled_mma.shape_mnk, mode=[2])
+        mma_inst_tile_k = 4 # make the cta tile size k to be 64 for bfloat16 due to the 128B swizzle requirement
+        mma_tiler = (
+            mma_tiler[0],
+            mma_tiler[1],
+            mma_inst_shape_k * mma_inst_tile_k,
+        )
+
+        cta_tile_shape_mnk = (
+            mma_tiler[0] // cute.size(tiled_mma.thr_id.shape),
+            mma_tiler[1],
+            mma_tiler[2],
+        )
+
+        cluster_layout_vmnk = cute.tiled_divide(
+            cute.make_layout((*self.moe_param.cluster_shape_mn, 1)),
+            (tiled_mma.thr_id.shape,),
+        )
+
+        # Compute number of multicast CTAs for A/B
+        num_mcast_ctas_a = cute.size(cluster_layout_vmnk.shape[2])
+        num_mcast_ctas_b = cute.size(cluster_layout_vmnk.shape[1])
+        is_a_mcast = num_mcast_ctas_a > 1
+        is_b_mcast = num_mcast_ctas_b > 1
+
+        # Compute epilogue subtile
+        if cutlass.const_expr(self.moe_param.use_tma_store):
+            epi_tile = sm100_utils.compute_epilogue_tile_shape(
+                cta_tile_shape_mnk,
+                self.moe_param.use_2cta_instrs,
+                self.o_layout,
+                self.o_dtype,
+            )
+        else:
+            epi_tile = self.cta_tile_shape_mnk[:2]
+            
+        # Setup A/B/C stage count in shared memory and ACC stage count in tensor memory
+        used_smem_size = (18 + self.local_rank * self.num_local_experts) * 4 # used smem size for mpk task management and expert_send_count barrier
+        num_acc_stage, num_ab_stage, num_c_stage = compute_stages(
+            tiled_mma,
+            mma_tiler,
+            a_dtype,
+            b_dtype,
+            epi_tile,
+            self.o_dtype,
+            self.o_layout,
+            self.smem_capacity,
+            used_smem_size,
+            self.occupancy,
+            self.moe_param.use_tma_store,
+        )
+        
+        # Compute A/B/C shared memory layout
+        self.a_smem_layout_staged = sm100_utils.make_smem_layout_a(
+            tiled_mma,
+            mma_tiler,
+            a_dtype,
+            num_ab_stage,
+        )
+        self.b_smem_layout_staged = sm100_utils.make_smem_layout_b(
+            tiled_mma,
+            mma_tiler,
+            b_dtype,
+            num_ab_stage,
+        )
+        self.c_smem_layout_staged = (
+            sm100_utils.make_smem_layout_epi(
+                self.o_dtype,
+                self.o_layout,
+                epi_tile,
+                num_c_stage,
+            )
+            if cutlass.const_expr(self.moe_param.use_tma_store)
+            else None
+        )
+        
+        epilog_shape = cute.product_each(
+            cute.shape(epi_tile)
+        )
+        print(epilog_shape)
+        exit(0)
+
+        # Compute the number of tensor memory allocation columns
+        self.num_tmem_alloc_cols = compute_num_tmem_alloc_cols(
+            tiled_mma, mma_tiler, num_acc_stage
+        )
         
         self.const_param = ConstParam(
             hidden_dim=self.hidden_dim,
@@ -114,6 +248,7 @@ class SM100MPKIntraMoEKernel:
             thr_tile_shape=self.thr_tile_shape,
             mma_tiler_mn=self.moe_param.mma_tiler_mn,
             swapAB=self.moe_param.swapAB,
+            occupancy=self.occupancy,
             mpk_queue_len=self.mpk_queue_len,
             num_workers=self.num_workers,
             acc_dtype=self.moe_param.acc_dtype,
@@ -134,29 +269,49 @@ class SM100MPKIntraMoEKernel:
     ):  
         # setup group gemm attributes
 
-        self.a_dtype = self.moe_param.in_dtype
-        self.b_dtype = self.moe_param.in_dtype
-        self.c_dtype = self.moe_param.out_dtype
-        self.a_major_mode = tcgen05.OperandMajorMode.K
-        self.b_major_mode = tcgen05.OperandMajorMode.K
-        self.c_layout = utils.LayoutEnum.ROW_MAJOR
+        self.w_dtype = kernel_param.w13_tensor.element_type
+        self.i_dtype = kernel_param.dispatch_recv_token_tensor.element_type
+        self.o_dtype = kernel_param.combine_send_token_tensor.element_type
+        self.w_major_mode = utils.LayoutEnum.from_tensor(kernel_param.w13_tensor[0, None, None]).mma_major_mode()
+        self.i_major_mode = utils.LayoutEnum.from_tensor(kernel_param.dispatch_recv_token_tensor[0, None, None]).mma_major_mode()
+        self.o_layout = utils.LayoutEnum.from_tensor(kernel_param.combine_send_token_tensor[0, None, None])
         
-        if cutlass.const_expr(self.a_dtype != self.b_dtype):
+        self.occupancy = self.moe_param.occupancy
+        
+        if cutlass.const_expr(self.w_dtype != self.i_dtype):
             raise TypeError(f"Type mismatch: {self.a_dtype} != {self.b_dtype}")
+        
+        # TODO(Zhihao): continue implementing this part
         
         # Get launch parameters
         sm_count = utils.HardwareInfo(torch.cuda.current_device()).get_device_multiprocessor_count()
         grid_dim = [sm_count, 1, 1]
         block_dim = [self.threads_per_cta, 1, 1]
-        smem_size = 196 * 1024
-        self.shared_storage = SharedStorage
         
-        # You are here: finish impl
+        @cute.struct
+        class SharedStorage:
+            send_index_buffer: cute.struct.MemRange[
+                cutlass.Int32, 1
+            ]
+            mpk_task_sync_buffer: cute.struct.MemRange[
+                cutlass.Int32, 1
+            ]
+            mpk_worker_sync_buffer: cute.struct.MemRange[
+                cutlass.Int32, 16
+            ]
+            expert_send_count: cute.struct.MemRange[
+                cutlass.Int32, self.num_local_experts * self.num_local_ranks
+            ]
+
+        self.shared_storage = SharedStorage
 
         assert self.hidden_dim % (32 * self.num_worker_warp) == 0, "The hidden dimension should be divisible by the number of worker threads per CTA."
 
         self._setup_attributes()
         
+        # # TODO(Zhihao): complete gemm initialization then remove this line
+        # exit(0)
+
         self.kernel(
             kernel_param=kernel_param,
             # profiler meta
@@ -165,7 +320,7 @@ class SM100MPKIntraMoEKernel:
         ).launch(
             grid=grid_dim,
             block=block_dim,
-            smem=smem_size,
+            smem=self.shared_storage.size_in_bytes(),
             stream=stream,
         )
 
