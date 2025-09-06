@@ -119,7 +119,14 @@ class MPKScheduler:
         self.profiler.profile_event(event_name="Sync-Task", event_type="end")
         
     @cute.jit
-    def execute_task(self):
+    def execute_task(
+        self,
+        w13_tma_atom_a: cute.CopyAtom,
+        w13_tma_atom_b: cute.CopyAtom,
+        w13_tma_atom_c: cute.CopyAtom,
+        w2_tma_atom_a: cute.CopyAtom,
+        w2_tma_atom_b: cute.CopyAtom,
+    ):
         # task decode
         # device kernel execution with switch
         warp_idx = cute.arch.warp_idx()
@@ -148,7 +155,11 @@ class MPKScheduler:
                 task_runner.execute()
             elif task_code == MPKTask.kFusedFFNW13.value:
                 task_runner = FusedFFNW13Task(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
-                task_runner.execute()
+                task_runner.execute(
+                    w13_tma_atom_a,
+                    w13_tma_atom_b,
+                    w13_tma_atom_c,
+                )
             elif task_code == MPKTask.kFusedFFNW2Send.value:
                 task_runner = FusedFFNW2SendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()

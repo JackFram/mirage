@@ -27,7 +27,7 @@ def reset_tensors(dist_param: ProcessGroupInfo):
 
     num_ranks = dist_param.world_size
 
-    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 7168, 8, (32 // num_ranks) * num_ranks
+    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 2560, 8, (32 // num_ranks) * num_ranks
 
     assert num_experts % num_ranks == 0, f"num_experts {num_experts} should be divisible by num_ranks {num_ranks}"
     num_local_experts = num_experts // num_ranks
@@ -94,21 +94,24 @@ def reset_tensors(dist_param: ProcessGroupInfo):
         dtype=torch.int32,
     ).fill_(0).cuda()
 
+    # permute for group gemm
+    permute_order = (1, 2, 0)
+
     dispatch_recv_token_tensor = torch.empty(
         (num_local_experts, num_tokens, hidden_dim),
         dtype=torch_dtype(moe_param.in_dtype),
-    ).fill_(0).cuda() # also the input for the ffn fused w13 task
+    ).fill_(0).cuda().permute(permute_order) # also the input for the ffn fused w13 task
 
     '''
     ffn_grouped_gemm
     '''
-    w13_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim * 2, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
-    w2_tensor = torch.randn(num_local_experts, inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device='cuda')
+    w13_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim * 2, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
+    w2_tensor = torch.randn(num_local_experts, inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
 
     ffn_fused_w13_output_tensor = torch.empty(
         (num_local_experts, num_tokens, inter_dim),
         dtype=torch_dtype(moe_param.in_dtype),
-    ).fill_(0).cuda() # also the input for the ffn fused w13 task
+    ).fill_(0).cuda().permute(permute_order) # also the input for the ffn fused w13 task
 
     '''
     combine

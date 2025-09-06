@@ -96,8 +96,9 @@ class TokenGatherTask:
             )
         tiled_src_tensor = cute.zipped_divide(local_buffer_tensor, thr_tile_shape)
         thr_src_vec = tiled_src_tensor[(None, (0, thread_idx))]
-
-        dst_tensor = dispatch_recv_token_tensor[(dst_expert, dst_expert_offset, None)]
+        
+        # [num_token, hidden_dim, num_expert]
+        dst_tensor = dispatch_recv_token_tensor[(dst_expert_offset, None, dst_expert)]
         # TODO(revisit): find a better way to deal with tile_divide if the overhead is non-negligible
         dst_tensor = cute.make_tensor(dst_tensor.iterator, cute.make_layout((1, hidden_dim), stride=(hidden_dim, 1)))
         # fix here by casting the layout

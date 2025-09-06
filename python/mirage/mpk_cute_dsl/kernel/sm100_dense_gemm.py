@@ -566,7 +566,6 @@ class PersistentDenseGemmKernel:
         )
         # Coord inside cta
         tidx, _, _ = cute.arch.thread_idx()
-
         #
         # Alloc and init: a+b full/empty, accumulator full/empty, tensor memory dealloc barrier
         #
@@ -2117,7 +2116,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mma_tiler_mn",
         type=parse_comma_separated_ints,
-        default=(128, 128),
+        default=(128, 64),
         help="Mma tile shape (comma-separated)",
     )
     parser.add_argument(
@@ -2126,8 +2125,8 @@ if __name__ == "__main__":
         default=(1, 1),
         help="Cluster shape (comma-separated)",
     )
-    parser.add_argument("--ab_dtype", type=cutlass.dtype, default=cutlass.TFloat32)
-    parser.add_argument("--c_dtype", type=cutlass.dtype, default=cutlass.Float32)
+    parser.add_argument("--ab_dtype", type=cutlass.dtype, default=cutlass.Float16)
+    parser.add_argument("--c_dtype", type=cutlass.dtype, default=cutlass.Float16)
     parser.add_argument("--acc_dtype", type=cutlass.dtype, default=cutlass.Float32)
     parser.add_argument(
         "--use_2cta_instrs",

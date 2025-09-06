@@ -67,6 +67,6 @@ class FusedFFNW2SendTask:
 
         # fused kernel 
         
-        # TODO(Zhihao): W2 GeMM
+        # TODO(Zhihao): W2 GeMM + SwapAB
         
         # end of the kernel

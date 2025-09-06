@@ -2,7 +2,7 @@ import cutlass
 import cutlass.cute as cute
 import torch
 import math
-from typing import Type
+from typing import Optional, Type, Union
 from cutlass.cute.nvgpu import tcgen05
 import cutlass.utils as utils
 
@@ -35,6 +35,18 @@ class ConstParam:
             use_2cta_instrs: bool,
             cluster_shape_mn: tuple[int, int],
             tensormap_update_mode: cutlass.utils.TensorMapUpdateMode,
+            # gemm kernel param
+            tiled_mma: cute.TiledMma,
+            w13_mA_mkl: cute.Tensor,
+            w13_mB_nkl: cute.Tensor,
+            w2_mA_mkl: cute.Tensor,
+            w2_mB_nkl: cute.Tensor,
+            w13_mC_mnl: cute.Tensor,
+            cluster_layout_vmnk: cute.Layout,
+            a_smem_layout_staged: cute.ComposedLayout,
+            b_smem_layout_staged: cute.ComposedLayout,
+            c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+            epi_tile: cute.Tile,
         ):
         
         # kernel const parameters
@@ -89,6 +101,19 @@ class ConstParam:
         self.tmem_ptr_sync_bar_id = 4
         self.tensormap_ab_init_bar_id = 5
         self.num_tma_load_bytes = 0
+        
+        # gemm kernel const parameters
+        self.tiled_mma = tiled_mma
+        self.a_smem_layout_staged = a_smem_layout_staged
+        self.b_smem_layout_staged = b_smem_layout_staged
+        self.c_smem_layout_staged = c_smem_layout_staged
+        self.w13_mA_mkl = w13_mA_mkl
+        self.w13_mB_nkl = w13_mB_nkl
+        self.w2_mA_mkl = w2_mA_mkl
+        self.w2_mB_nkl = w2_mB_nkl
+        self.w13_mC_mnl = w13_mC_mnl
+        self.cluster_layout_vmnk = cluster_layout_vmnk
+        self.epi_tile = epi_tile
 
         # moe comm buffer const parameters
         self.token_buffer_offset_in_bytes = token_buffer_offset_in_bytes

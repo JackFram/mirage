@@ -1,10 +1,11 @@
+from typing import Optional, Union
 import cutlass.cute as cute
 import cutlass
 import mpk_cute_dsl.kernel.dsl_ptx_wrapper as inline_ptx
 
+from cutlass.cute.nvgpu import cpasync, tcgen05
 from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
-
 from mpk_cute_dsl.const_param import ConstParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
@@ -48,14 +49,28 @@ class FusedFFNW13Task:
         return FusedFFNW13Task(new_task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
 
     @cute.jit
-    def execute(self):
+    def execute(
+        self,
+        w13_tma_atom_a: cute.CopyAtom,
+        w13_tma_atom_b: cute.CopyAtom,
+        w13_tma_atom_c: Optional[cute.CopyAtom],
+    ):
         # Execute the combine receive task
         self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="begin")
-        self.fused_ffn_w13()
+        self.fused_ffn_w13(
+            w13_tma_atom_a=w13_tma_atom_a,
+            w13_tma_atom_b=w13_tma_atom_b,
+            w13_tma_atom_c=w13_tma_atom_c,
+        )
         self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="end")
     
     @cute.jit
-    def fused_ffn_w13(self):
+    def fused_ffn_w13(
+        self,
+        w13_tma_atom_a: cute.CopyAtom,
+        w13_tma_atom_b: cute.CopyAtom,
+        w13_tma_atom_c: Optional[cute.CopyAtom],
+    ):
         thread_idx, _, _ = cute.arch.thread_idx()
         expert_idx = (self.task_desc >> 16) & cutlass.Uint32(0x000000FF)
         tile_idx = (self.task_desc >> 8) & cutlass.Uint32(0x000000FF)
@@ -71,7 +86,8 @@ class FusedFFNW13Task:
         num_local_experts = self.const_param.num_local_experts
         num_tokens_per_rank = self.const_param.num_tokens_per_rank
         num_workers = self.const_param.num_workers
-        
+        tma_warp_id = self.const_param.tma_warp_id
+
         mpk_task_barrier = self.kernel_param.mpk_task_barrier
         mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
         mpk_task_queue = self.kernel_param.mpk_task_queue
@@ -81,6 +97,29 @@ class FusedFFNW13Task:
         
         # TODO(Zhihao): W1W3 pipelined accumulation + SwiGLU + element prod epilogue + SwapAB
         
+        warp_idx = cute.arch.warp_idx()
+        warp_idx = cute.arch.make_warp_uniform(warp_idx)
+        
+        # Prefetch tma desc
+        if warp_idx == tma_warp_id:
+            cpasync.prefetch_descriptor(w13_tma_atom_a)
+            cpasync.prefetch_descriptor(w13_tma_atom_b)
+            cpasync.prefetch_descriptor(w13_tma_atom_c)
+        
+        # no cluster launch and 2SM UMMA
+        mma_tile_coord_v = 0
+        is_leader_cta = True
+        cta_rank_in_cluster = 0
+        block_in_cluster_coord_vmnk = (0, 0, 0, 0)
+        #
+        # Alloc and init: a+b full/empty, accumulator full/empty, tensor memory dealloc barrier
+        #
+
+        tmem_dealloc_mbar_ptr = self.smem_storage.tmem_dealloc_mbar_ptr
+        tmem_holding_buf = self.smem_storage.tmem_holding_buf
+
+        # TODO(Zhihao): continue here
+
         # end of the kernel
         
         if thread_idx == 0:
