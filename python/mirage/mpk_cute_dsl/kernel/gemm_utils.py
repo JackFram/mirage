@@ -46,8 +46,9 @@ def compute_stages(
                  (ACC stages, A/B operand stages, C stages)
         :rtype: tuple[int, int, int]
         """
-        # Default ACC stages
-        num_acc_stage = 2
+        # Default ACC stages as we are doing dynamic scheduling
+        # TODO(Zhihao): see if we can overlap ffn tasks to use more acc stages
+        num_acc_stage = 1
 
         # Default C stages
         num_c_stage = 2 if use_tma_store else 0

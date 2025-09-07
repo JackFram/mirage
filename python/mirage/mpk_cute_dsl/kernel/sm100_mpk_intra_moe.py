@@ -161,35 +161,29 @@ class SM100MPKIntraMoEKernel:
             mma_inst_shape_k * mma_inst_tile_k,
         )
 
-        cta_tile_shape_mnk = (
+        self.cta_tile_shape_mnk = (
             self.mma_tiler[0] // cute.size(tiled_mma.thr_id.shape),
             self.mma_tiler[1],
             self.mma_tiler[2],
         )
         
         if self.moe_param.swapAB:
-            output_cta_tile_shape = (cta_tile_shape_mnk[1], cta_tile_shape_mnk[0], cta_tile_shape_mnk[2])
+            output_cta_tile_shape = (self.cta_tile_shape_mnk[1], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2])
         else:
-            output_cta_tile_shape = cta_tile_shape_mnk
-        
+            output_cta_tile_shape = self.cta_tile_shape_mnk
+
 
         self.cluster_layout_vmnk = cute.tiled_divide(
             cute.make_layout((*self.moe_param.cluster_shape_mn, 1)),
             (tiled_mma.thr_id.shape,),
         )
-
-        # Compute number of multicast CTAs for A/B
-        num_mcast_ctas_a = cute.size(self.cluster_layout_vmnk.shape[2])
-        num_mcast_ctas_b = cute.size(self.cluster_layout_vmnk.shape[1])
-        is_a_mcast = num_mcast_ctas_a > 1
-        is_b_mcast = num_mcast_ctas_b > 1
         
         assert self.moe_param.use_tma_store, "we always use tma store currently"
 
         # Compute epilogue subtile
         if cutlass.const_expr(self.moe_param.use_tma_store):
             self.epi_tile = sm100_utils.compute_epilogue_tile_shape(
-                cta_tile_shape_mnk,
+                self.cta_tile_shape_mnk,
                 self.moe_param.use_2cta_instrs,
                 self.o_layout,
                 self.o_dtype,
@@ -371,6 +365,7 @@ class SM100MPKIntraMoEKernel:
         sm_count = utils.HardwareInfo(torch.cuda.current_device()).get_device_multiprocessor_count()
         grid_dim = [sm_count, 1, 1]
         block_dim = [self.threads_per_cta, 1, 1]
+        cluster_shape = (1, 1, 1)
         
         @cute.struct
         class SharedStorage:
@@ -432,16 +427,33 @@ class SM100MPKIntraMoEKernel:
             dispatch_token_stride=self.dispatch_token_stride,
             num_worker_warps=self.num_worker_warp,
             thr_tile_shape=self.thr_tile_shape,
-            mma_tiler_mn=self.moe_param.mma_tiler_mn,
+            mma_tiler=self.mma_tiler,
+            cta_tile_shape_mnk=self.cta_tile_shape_mnk,
             swapAB=self.moe_param.swapAB,
             occupancy=self.moe_param.occupancy,
             mpk_queue_len=self.mpk_queue_len,
             num_workers=self.num_workers,
+            c_dtype=self.o_dtype,
+            c_layout=self.o_layout,
             acc_dtype=self.moe_param.acc_dtype,
             use_2cta_instrs=self.moe_param.use_2cta_instrs,
             cluster_shape_mn=self.moe_param.cluster_shape_mn,
-            tensormap_update_mode=self.moe_param.tensormap_update_mode,
+            num_tma_load_bytes=self.num_tma_load_bytes,
+            num_tmem_alloc_cols=self.num_tmem_alloc_cols,
+            num_ab_stage=self.num_ab_stage,
+            num_c_stage=self.num_c_stage,
+            num_acc_stage=self.num_acc_stage,
+        )
+
+        self.kernel(
+            const_param=const_param,
+            kernel_param=kernel_param,
             tiled_mma=tiled_mma,
+            w13_tma_atom_a=tma_atom_w13_a,
+            w13_tma_atom_b=tma_atom_w13_b,
+            w13_tma_atom_c=tma_atom_w13_c,
+            w2_tma_atom_a=tma_atom_w2_a,
+            w2_tma_atom_b=tma_atom_w2_b,
             w13_mA_mkl=tma_tensor_w13_a,
             w13_mB_nkl=tma_tensor_w13_b,
             w2_mA_mkl=tma_tensor_w2_a,
@@ -452,22 +464,13 @@ class SM100MPKIntraMoEKernel:
             b_smem_layout_staged=self.b_smem_layout_staged,
             c_smem_layout_staged=self.c_smem_layout_staged,
             epi_tile=self.epi_tile,
-        )
-
-        self.kernel(
-            const_param=const_param,
-            kernel_param=kernel_param,
-            w13_tma_atom_a=tma_atom_w13_a,
-            w13_tma_atom_b=tma_atom_w13_b,
-            w13_tma_atom_c=tma_atom_w13_c,
-            w2_tma_atom_a=tma_atom_w2_a,
-            w2_tma_atom_b=tma_atom_w2_b,
             # profiler meta
             profiler_buffer=profiler_buffer,
             profiler_ptr=profiler_ptr,
         ).launch(
             grid=grid_dim,
             block=block_dim,
+            cluster=cluster_shape,
             smem=self.shared_storage.size_in_bytes(),
             stream=stream,
         )
@@ -478,11 +481,23 @@ class SM100MPKIntraMoEKernel:
         self,
         const_param: cutlass.Constexpr[ConstParam],
         kernel_param: MoEKernelParam,
+        # group gemm param
+        tiled_mma: cute.TiledMma,
         w13_tma_atom_a: cute.CopyAtom,
         w13_tma_atom_b: cute.CopyAtom,
         w13_tma_atom_c: cute.CopyAtom,
         w2_tma_atom_a: cute.CopyAtom,
         w2_tma_atom_b: cute.CopyAtom,
+        w13_mA_mkl: cute.Tensor,
+        w13_mB_nkl: cute.Tensor,
+        w2_mA_mkl: cute.Tensor,
+        w2_mB_nkl: cute.Tensor,
+        w13_mC_mnl: cute.Tensor,
+        cluster_layout_vmnk: cute.Layout,
+        a_smem_layout_staged: cute.ComposedLayout,
+        b_smem_layout_staged: cute.ComposedLayout,
+        c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+        epi_tile: cute.Tile,
         # profiler meta
         profiler_buffer: cute.Tensor,
         profiler_ptr: cute.Tensor,
@@ -493,7 +508,7 @@ class SM100MPKIntraMoEKernel:
 
         warp_idx = cute.arch.warp_idx()
         warp_idx = cute.arch.make_warp_uniform(warp_idx)
-
+        
         profiler = DslProfiler(
             profiler_buffer=profiler_buffer,
             profiler_ptr=profiler_ptr,
@@ -515,11 +530,22 @@ class SM100MPKIntraMoEKernel:
             scheduler.fetch_next_task()
             scheduler.sync_task()
             is_final_task = scheduler.execute_task(
-                w13_tma_atom_a,
-                w13_tma_atom_b,
-                w13_tma_atom_c,
-                w2_tma_atom_a,
-                w2_tma_atom_b,
+                tiled_mma=tiled_mma,
+                w13_tma_atom_a=w13_tma_atom_a,
+                w13_tma_atom_b=w13_tma_atom_b,
+                w13_tma_atom_c=w13_tma_atom_c,
+                w2_tma_atom_a=w2_tma_atom_a,
+                w2_tma_atom_b=w2_tma_atom_b,
+                w13_mA_mkl=w13_mA_mkl,
+                w13_mB_nkl=w13_mB_nkl,
+                w2_mA_mkl=w2_mA_mkl,
+                w2_mB_nkl=w2_mB_nkl,
+                w13_mC_mnl=w13_mC_mnl,
+                cluster_layout_vmnk=cluster_layout_vmnk,
+                a_smem_layout_staged=a_smem_layout_staged,
+                b_smem_layout_staged=b_smem_layout_staged,
+                c_smem_layout_staged=c_smem_layout_staged,
+                epi_tile=epi_tile,
             )
 
     @cute.jit

@@ -1,3 +1,4 @@
+from typing import Optional, Union
 import cutlass
 import cutlass.cute as cute
 from cutlass.cutlass_dsl import (
@@ -121,11 +122,22 @@ class MPKScheduler:
     @cute.jit
     def execute_task(
         self,
+        tiled_mma: cute.TiledMma,
         w13_tma_atom_a: cute.CopyAtom,
         w13_tma_atom_b: cute.CopyAtom,
         w13_tma_atom_c: cute.CopyAtom,
         w2_tma_atom_a: cute.CopyAtom,
         w2_tma_atom_b: cute.CopyAtom,
+        w13_mA_mkl: cute.Tensor,
+        w13_mB_nkl: cute.Tensor,
+        w2_mA_mkl: cute.Tensor,
+        w2_mB_nkl: cute.Tensor,
+        w13_mC_mnl: cute.Tensor,
+        cluster_layout_vmnk: cute.Layout,
+        a_smem_layout_staged: cute.ComposedLayout,
+        b_smem_layout_staged: cute.ComposedLayout,
+        c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+        epi_tile: cute.Tile,
     ):
         # task decode
         # device kernel execution with switch
@@ -156,9 +168,18 @@ class MPKScheduler:
             elif task_code == MPKTask.kFusedFFNW13.value:
                 task_runner = FusedFFNW13Task(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute(
-                    w13_tma_atom_a,
-                    w13_tma_atom_b,
-                    w13_tma_atom_c,
+                    tiled_mma=tiled_mma,
+                    w13_tma_atom_a=w13_tma_atom_a,
+                    w13_tma_atom_b=w13_tma_atom_b,
+                    w13_tma_atom_c=w13_tma_atom_c,
+                    w13_mA_mkl=w13_mA_mkl,
+                    w13_mB_nkl=w13_mB_nkl,
+                    w13_mC_mnl=w13_mC_mnl,
+                    cluster_layout_vmnk=cluster_layout_vmnk,
+                    a_smem_layout_staged=a_smem_layout_staged,
+                    b_smem_layout_staged=b_smem_layout_staged,
+                    c_smem_layout_staged=c_smem_layout_staged,
+                    epi_tile=epi_tile,
                 )
             elif task_code == MPKTask.kFusedFFNW2Send.value:
                 task_runner = FusedFFNW2SendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
