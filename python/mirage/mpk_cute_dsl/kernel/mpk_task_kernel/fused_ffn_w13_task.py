@@ -10,6 +10,7 @@ from mpk_cute_dsl.profiler.dsl_profiler import DslProfiler
 from mpk_cute_dsl.param import MoEKernelParam
 from mpk_cute_dsl.const_param import ConstParam
 from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
+from mpk_cute_dsl.kernel.activation import silu
 
 from cutlass.cutlass_dsl import (
     new_from_mlir_values,
@@ -54,6 +55,7 @@ class FusedFFNW13Task:
     def execute(
         self,
         tiled_mma: cute.TiledMma,
+        w13_d_tiled_mma: cute.TiledMma,
         w13_tma_atom_a: cute.CopyAtom,
         w13_tma_atom_b: cute.CopyAtom,
         w13_tma_atom_c: Optional[cute.CopyAtom],
@@ -65,11 +67,13 @@ class FusedFFNW13Task:
         b_smem_layout_staged: cute.ComposedLayout,
         c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         epi_tile: cute.Tile,
+        w13_d_tile: cute.Tile,
     ):
         # Execute the combine receive task
         self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="begin")
         self.fused_ffn_w13(
             tiled_mma=tiled_mma,
+            w13_d_tiled_mma=w13_d_tiled_mma,
             w13_tma_atom_a=w13_tma_atom_a,
             w13_tma_atom_b=w13_tma_atom_b,
             w13_tma_atom_c=w13_tma_atom_c,
@@ -81,6 +85,7 @@ class FusedFFNW13Task:
             b_smem_layout_staged=b_smem_layout_staged,
             c_smem_layout_staged=c_smem_layout_staged,
             epi_tile=epi_tile,
+            w13_d_tile=w13_d_tile,
         )
         self.task_update()
         self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="end")
@@ -89,6 +94,7 @@ class FusedFFNW13Task:
     def fused_ffn_w13(
         self,
         tiled_mma: cute.TiledMma,
+        w13_d_tiled_mma: cute.TiledMma,
         w13_tma_atom_a: cute.CopyAtom,
         w13_tma_atom_b: cute.CopyAtom,
         w13_tma_atom_c: Optional[cute.CopyAtom],
@@ -100,6 +106,7 @@ class FusedFFNW13Task:
         b_smem_layout_staged: cute.ComposedLayout,
         c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         epi_tile: cute.Tile,
+        w13_d_tile: cute.Tile,
     ):
         thread_idx, _, _ = cute.arch.thread_idx()
         expert_idx = (self.task_desc >> 16) & cutlass.Uint32(0x000000FF)
@@ -115,6 +122,7 @@ class FusedFFNW13Task:
         num_ab_stage = self.const_param.num_ab_stage
         num_c_stage = self.const_param.num_c_stage
         mma_tiler = self.const_param.mma_tiler
+        d_mma_tiler = self.const_param.d_mma_tiler
         cta_sync_bar_id = self.const_param.cta_sync_bar_id
         epilog_sync_bar_id = self.const_param.epilog_sync_bar_id
         ffn_w13_k_cnt = self.const_param.ffn_w13_k_cnt
@@ -173,7 +181,7 @@ class FusedFFNW13Task:
         #
         # Setup smem tensor A/B/C
         #
-        # (EPI_TILE_M, EPI_TILE_N, STAGE)
+        # (EPI_TILE_M, EPI_TILE_N, STAGE) ((8,4),(64,1),(1,4))
         sC = self.smem_storage.sC.get_tensor(
             c_smem_layout_staged.outer, swizzle=c_smem_layout_staged.inner
         )
@@ -197,21 +205,22 @@ class FusedFFNW13Task:
         gB_nkl = cute.local_tile(
             w13_mB_nkl, cute.slice_(mma_tiler, (0, None, None)), (None, None, None)
         )
-        # (bM, bN, RestM, RestN, RestL)
+        # (bM, bN, RestM, RestN, RestL) # (64,64,2,40,16)
         gC_mnl = cute.local_tile(
-            w13_mC_mnl, cute.slice_(mma_tiler, (None, None, 0)), (None, None, None)
+            w13_mC_mnl, cute.slice_((d_mma_tiler[0], d_mma_tiler[1] // 2, d_mma_tiler[2]), (None, None, 0)), (None, None, None)
         )
         
         #
         # Partition global tensor for TiledMMA_A/B/C
         #
         thr_mma = tiled_mma.get_slice(mma_tile_coord_v)
+        d_thr_mma = w13_d_tiled_mma.get_slice(mma_tile_coord_v)
         # (MMA, MMA_M, MMA_K, RestM, RestK, RestL)
         tCgA = thr_mma.partition_A(gA_mkl)
         # (MMA, MMA_N, MMA_K, RestN, RestK, RestL)
         tCgB = thr_mma.partition_B(gB_nkl)
-        # (MMA, MMA_M, MMA_N, RestM, RestN, RestL)
-        tCgC = thr_mma.partition_C(gC_mnl)
+        # (MMA, MMA_M, MMA_N, RestM, RestN, RestL), ((64,64),1,1,2,40,16)
+        tCgC = d_thr_mma.partition_C(gC_mnl)
 
         #
         # Partition global/shared tensor for load A, B with TMA
@@ -477,33 +486,34 @@ class FusedFFNW13Task:
             )
             # (MMA, MMA_M, MMA_N, STAGE)
             tCtAcc_base = cute.make_tensor(tmem_ptr, tCtAcc_fake.layout)
-
             epi_tidx = thread_idx
             #
             # Partition for epilogue
             #
             (
                 tiled_copy_t2r,
-                tTR_tAcc_base,
-                tTR_rAcc,
+                tTR_tAcc_base, # (((32,32),1),1,1,1,2,1)
+                tTR_rAcc, # ((32,1),1,1)
             ) = self.epilog_tmem_copy_and_partition(
                 epi_tidx, tCtAcc_base, tCgC, epi_tile, False
             )
             
             tTR_rC = cute.make_fragment(tTR_rAcc.shape, c_dtype)
+            
             tiled_copy_r2s, tRS_rC, tRS_sC = self.epilog_smem_copy_and_partition(
                 tiled_copy_t2r, tTR_rC, epi_tidx, sC
             )
+            
             (
                 w13_tma_atom_c,
                 bSG_sC,
                 bSG_gC_partitioned,
-            ) = self.epilog_gmem_copy_and_partition(w13_tma_atom_c, tCgC, epi_tile, sC)
+            ) = self.epilog_gmem_copy_and_partition(w13_tma_atom_c, tCgC, w13_d_tile, sC)
             
-            if cutlass.const_expr(swapAB):
-                mma_tile_coord_mnl = (ffn_w13_task_id, tile_idx, expert_idx)
-            else:
-                mma_tile_coord_mnl = (tile_idx, ffn_w13_task_id, expert_idx)
+            # if thread_idx == 0:
+            #     cute.printf(bSG_gC_partitioned.shape, tCgC.shape, w13_d_tile[0], w13_d_tile[1], sC.shape)
+            
+            mma_tile_coord_mnl = (tile_idx, ffn_w13_task_id, expert_idx)
             
             #
             # Slice to per mma tile index
@@ -517,7 +527,6 @@ class FusedFFNW13Task:
                     *mma_tile_coord_mnl,
                 )
             ]
-            
             # Set tensor memory buffer for current tile
             acc_buf_idx = 0
             # (T2R, T2R_M, T2R_N, EPI_M, EPI_M)
@@ -529,8 +538,8 @@ class FusedFFNW13Task:
             acc_full_phase = 0
             cute.arch.mbarrier_wait(acc_full_mbar_ptr + acc_buf_idx, acc_full_phase)
 
-            tTR_tAcc = cute.group_modes(tTR_tAcc, 3, cute.rank(tTR_tAcc))
-            bSG_gC = cute.group_modes(bSG_gC, 1, cute.rank(bSG_gC))
+            tTR_tAcc = cute.group_modes(tTR_tAcc, 3, cute.rank(tTR_tAcc)) # (((32,32),1),1,1,(1,2))
+            bSG_gC = cute.group_modes(bSG_gC, 1, cute.rank(bSG_gC)) # (((64,32),1),(2,1))
             
             #
             # Store accumulator to global memory in subtiles
@@ -544,27 +553,40 @@ class FusedFFNW13Task:
                 tTR_tAcc_mn = tTR_tAcc[(None, None, None, subtile_idx)]
                 cute.copy(tiled_copy_t2r, tTR_tAcc_mn, tTR_rAcc)
                 
-                # TODO(Zhihao): add epilogue fusion and swapAB here
+                
+                # # TODO(Zhihao): add epilogue fusion and swapAB here
                 
                 #
-                # Convert to output type
-                #
+                # swiglu and element prod in a warp (even threads for w1 output and odd threads for w3 output)
+                # swiglu on even threads
+                if thread_idx % 2 == 0:
+                    for i in cutlass.range(cute.size(tTR_rAcc), unroll_full=True):
+                        tTR_rAcc[i] = silu(tTR_rAcc[i])
+                # element prod with odd threads
+                for i in cutlass.range(cute.size(tTR_rAcc), unroll_full=True):
+                    tTR_rAcc[i] = tTR_rAcc[i] * cute.arch.shuffle_sync_down(tTR_rAcc[i], offset=1)
+                # store even threads output to shared memory
                 acc_vec = tiled_copy_r2s.retile(tTR_rAcc).load()
                 tRS_rC.store(acc_vec.to(c_dtype))
-                #
-                # Store C to shared memory
-                #
-                epi_buffer = subtile_idx % num_c_stage
-                cute.copy(
-                    tiled_copy_r2s,
-                    tRS_rC,
-                    tRS_sC[(None, None, None, epi_buffer)],
-                )
-                # Fence and barrier to make sure shared memory store is visible to TMA store
-                cute.arch.fence_proxy(
-                    cute.arch.ProxyKind.async_shared,
-                    space=cute.arch.SharedSpace.shared_cta,
-                )
+                
+                if thread_idx == 0:
+                    # print(tiled_copy_r2s)
+                    cute.printf(tRS_rC.shape, sC.shape)
+                # TODO(Zhihao): continue here to see if we need swizzle for r2s transpose
+                # #
+                # # Store C to shared memory
+                # #
+                # epi_buffer = subtile_idx % num_c_stage
+                # cute.copy(
+                #     tiled_copy_r2s,
+                #     tRS_rC,
+                #     tRS_sC[(None, None, None, epi_buffer)],
+                # )
+                # # Fence and barrier to make sure shared memory store is visible to TMA store
+                # cute.arch.fence_proxy(
+                #     cute.arch.ProxyKind.async_shared,
+                #     space=cute.arch.SharedSpace.shared_cta,
+                # )
                 epilog_threads = 32 * len(epilog_warp_id)
                 cute.arch.barrier(
                     barrier_id=epilog_sync_bar_id,
@@ -583,10 +605,10 @@ class FusedFFNW13Task:
                 #     cute.arch.cp_async_bulk_wait_group(
                 #         num_c_stage - 1, read=True
                 #     )
-                # cute.arch.barrier(
-                #     barrier_id=epilog_sync_bar_id,
-                #     number_of_threads=epilog_threads,
-                # )
+                cute.arch.barrier(
+                    barrier_id=epilog_sync_bar_id,
+                    number_of_threads=epilog_threads,
+                )
             #
             # Async arrive accumulator buffer empty
             #

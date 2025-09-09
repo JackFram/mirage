@@ -31,6 +31,7 @@ class ConstParam:
             c_layout: cutlass.Constexpr[utils.LayoutEnum],
             thr_tile_shape: tuple[int, int],
             mma_tiler: tuple[int, int, int],
+            d_mma_tiler: tuple[int, int, int],
             cta_tile_shape_mnk: tuple[int, int, int],
             occupancy: cutlass.Constexpr[int],
             swapAB: bool,
@@ -69,6 +70,7 @@ class ConstParam:
         self.cluster_shape_mn = cluster_shape_mn
         # K dimension is deferred in _setup_attributes
         self.mma_tiler = mma_tiler
+        self.d_mma_tiler = d_mma_tiler
         self.cta_tile_shape_mnk = cta_tile_shape_mnk
         self.cta_group = (
             tcgen05.CtaGroup.TWO if use_2cta_instrs else tcgen05.CtaGroup.ONE

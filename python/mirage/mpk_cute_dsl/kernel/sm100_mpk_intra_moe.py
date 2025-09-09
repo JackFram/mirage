@@ -113,6 +113,12 @@ class SM100MPKIntraMoEKernel:
         - Computing Weight/Input/Output shared memory layout
         - Computing tensor memory allocation columns
         """
+        
+        assert not self.moe_param.use_2cta_instrs, "we don't use 2cta instrs for MPK MoE currently"
+
+        self.cta_group = tcgen05.CtaGroup.ONE
+
+        self.mma_tiler = (*self.moe_param.mma_tiler_mn, 1)
 
         if self.moe_param.swapAB:
             self.a_dtype = self.w_dtype
@@ -125,6 +131,7 @@ class SM100MPKIntraMoEKernel:
             self.w13_c_tensor = self.kernel_param.ffn_fused_w13_output_tensor
             self.w2_a_tensor = self.kernel_param.w2_tensor
             self.w2_b_tensor = self.kernel_param.ffn_fused_w13_output_tensor
+            self.d_mma_tiler = (self.mma_tiler[1], self.mma_tiler[0], self.mma_tiler[2])
         else:
             self.a_dtype = self.i_dtype
             self.b_dtype = self.w_dtype
@@ -136,12 +143,7 @@ class SM100MPKIntraMoEKernel:
             self.w13_c_tensor = self.kernel_param.ffn_fused_w13_output_tensor
             self.w2_a_tensor = self.kernel_param.ffn_fused_w13_output_tensor
             self.w2_b_tensor = self.kernel_param.w2_tensor
-
-        assert not self.moe_param.use_2cta_instrs, "we don't use 2cta instrs for MPK MoE currently"
-
-        self.cta_group = tcgen05.CtaGroup.ONE
-
-        self.mma_tiler = (*self.moe_param.mma_tiler_mn, 1)
+            self.d_mma_tiler = self.mma_tiler
 
         # Configure tiled mma
         tiled_mma = sm100_utils.make_trivial_tiled_mma(
@@ -166,12 +168,6 @@ class SM100MPKIntraMoEKernel:
             self.mma_tiler[1],
             self.mma_tiler[2],
         )
-        
-        if self.moe_param.swapAB:
-            output_cta_tile_shape = (self.cta_tile_shape_mnk[1], self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2])
-        else:
-            output_cta_tile_shape = self.cta_tile_shape_mnk
-
 
         self.cluster_layout_vmnk = cute.tiled_divide(
             cute.make_layout((*self.moe_param.cluster_shape_mn, 1)),
@@ -188,9 +184,16 @@ class SM100MPKIntraMoEKernel:
                 self.o_layout,
                 self.o_dtype,
             )
+            # divide by 2 as we are doing swiglu and product fusion
+            if self.moe_param.swapAB:
+                self.w13_d_tile = (cute.make_layout(self.epi_tile[1].shape), cute.make_layout(self.epi_tile[0].shape // 2))
+                self.w2_d_tile = (cute.make_layout(self.epi_tile[1].shape), cute.make_layout(self.epi_tile[0].shape))
+            else:
+                self.w13_d_tile = (cute.make_layout(self.epi_tile[0].shape) // 2, cute.make_layout(self.epi_tile[1].shape))
+                self.w2_d_tile = (cute.make_layout(self.epi_tile[0].shape), cute.make_layout(self.epi_tile[1].shape))
         else:
             self.epi_tile = self.cta_tile_shape_mnk[:2]
-            
+
         # Setup A/B/C stage count in shared memory and ACC stage count in tensor memory
         used_smem_size = (18 + self.local_rank * self.num_local_experts) * 4 # used smem size for mpk task management and expert_send_count barrier
         self.num_acc_stage, self.num_ab_stage, self.num_c_stage = compute_stages(
@@ -198,7 +201,7 @@ class SM100MPKIntraMoEKernel:
             self.mma_tiler,
             self.a_dtype,
             self.b_dtype,
-            self.epi_tile,
+            self.w2_d_tile,
             self.o_dtype,
             self.o_layout,
             self.smem_capacity,
@@ -221,17 +224,26 @@ class SM100MPKIntraMoEKernel:
             self.num_ab_stage,
         )
         # TODO(Zhihao): revisit here for swapAB
-        self.c_smem_layout_staged = (
+        self.w13_c_smem_layout_staged = (
             sm100_utils.make_smem_layout_epi(
                 self.o_dtype,
                 self.o_layout,
-                self.epi_tile,
+                self.w13_d_tile,
                 self.num_c_stage,
             )
             if cutlass.const_expr(self.moe_param.use_tma_store)
             else None
         )
-
+        self.c_smem_layout_staged = (
+            sm100_utils.make_smem_layout_epi(
+                self.o_dtype,
+                self.o_layout,
+                self.w2_d_tile,
+                self.num_c_stage,
+            )
+            if cutlass.const_expr(self.moe_param.use_tma_store)
+            else None
+        )
         # Compute the number of tensor memory allocation columns
         self.num_tmem_alloc_cols = compute_num_tmem_alloc_cols(
             tiled_mma, self.mma_tiler, self.num_acc_stage
@@ -270,6 +282,24 @@ class SM100MPKIntraMoEKernel:
             self.moe_param.acc_dtype,
             self.cta_group,
             self.mma_tiler[:2],
+        )
+
+        w13_d_tiled_mma = sm100_utils.make_trivial_tiled_mma(
+            self.a_dtype,
+            self.a_major_mode,
+            self.b_major_mode,
+            self.moe_param.acc_dtype,
+            self.cta_group,
+            (self.d_mma_tiler[0], self.d_mma_tiler[1] // 2),
+        )
+        
+        w2_d_tiled_mma = sm100_utils.make_trivial_tiled_mma(
+            self.a_dtype,
+            self.a_major_mode,
+            self.b_major_mode,
+            self.moe_param.acc_dtype,
+            self.cta_group,
+            (self.d_mma_tiler[0], self.d_mma_tiler[1]),
         )
         atom_thr_size = cute.size(tiled_mma.thr_id.shape)
 
@@ -343,15 +373,30 @@ class SM100MPKIntraMoEKernel:
         tma_tensor_w13_c = None
         if cutlass.const_expr(self.moe_param.use_tma_store):
             c_cta_v_layout = cute.composition(
-                cute.make_identity_layout(self.w13_c_tensor.shape), self.epi_tile
+                cute.make_identity_layout(self.w13_c_tensor.shape), self.w13_d_tile
             )
-            epi_smem_layout = cute.slice_(self.c_smem_layout_staged, (None, None, 0))
+            epi_smem_layout = cute.slice_(self.w13_c_smem_layout_staged, (None, None, 0))
             tma_atom_w13_c, tma_tensor_w13_c = cpasync.make_tiled_tma_atom(
                 cpasync.CopyBulkTensorTileS2GOp(),
                 self.w13_c_tensor,
                 epi_smem_layout,
                 c_cta_v_layout,
             )
+        # TODO(Zhihao): revisit here for w2 task
+        # # Setup TMA store for C in w2 task
+        # tma_atom_w2_c = None
+        # tma_tensor_w2_c = None
+        # if cutlass.const_expr(self.moe_param.use_tma_store):
+        #     c_cta_v_layout = cute.composition(
+        #         cute.make_identity_layout(self.w2_c_tensor.shape), self.w2_d_tile
+        #     )
+        #     epi_smem_layout = cute.slice_(self.c_smem_layout_staged, (None, None, 0))
+        #     tma_atom_w2_c, tma_tensor_w2_c = cpasync.make_tiled_tma_atom(
+        #         cpasync.CopyBulkTensorTileS2GOp(),
+        #         self.w2_c_tensor,
+        #         epi_smem_layout,
+        #         c_cta_v_layout, 
+        #     )
 
         self.buffer_align_bytes = 1024 # align to 1KB for smem swizzle requirement
         
@@ -428,6 +473,7 @@ class SM100MPKIntraMoEKernel:
             num_worker_warps=self.num_worker_warp,
             thr_tile_shape=self.thr_tile_shape,
             mma_tiler=self.mma_tiler,
+            d_mma_tiler=self.d_mma_tiler,
             cta_tile_shape_mnk=self.cta_tile_shape_mnk,
             swapAB=self.moe_param.swapAB,
             occupancy=self.moe_param.occupancy,
@@ -449,6 +495,8 @@ class SM100MPKIntraMoEKernel:
             const_param=const_param,
             kernel_param=kernel_param,
             tiled_mma=tiled_mma,
+            w13_d_tiled_mma=w13_d_tiled_mma,
+            w2_d_tiled_mma=w2_d_tiled_mma,
             w13_tma_atom_a=tma_atom_w13_a,
             w13_tma_atom_b=tma_atom_w13_b,
             w13_tma_atom_c=tma_atom_w13_c,
@@ -463,7 +511,10 @@ class SM100MPKIntraMoEKernel:
             a_smem_layout_staged=self.a_smem_layout_staged,
             b_smem_layout_staged=self.b_smem_layout_staged,
             c_smem_layout_staged=self.c_smem_layout_staged,
+            w13_c_smem_layout_staged=self.w13_c_smem_layout_staged,
             epi_tile=self.epi_tile,
+            w13_d_tile=self.w13_d_tile,
+            w2_d_tile=self.w2_d_tile,
             # profiler meta
             profiler_buffer=profiler_buffer,
             profiler_ptr=profiler_ptr,
@@ -483,6 +534,8 @@ class SM100MPKIntraMoEKernel:
         kernel_param: MoEKernelParam,
         # group gemm param
         tiled_mma: cute.TiledMma,
+        w13_d_tiled_mma: cute.TiledMma,
+        w2_d_tiled_mma: cute.TiledMma,
         w13_tma_atom_a: cute.CopyAtom,
         w13_tma_atom_b: cute.CopyAtom,
         w13_tma_atom_c: cute.CopyAtom,
@@ -497,7 +550,10 @@ class SM100MPKIntraMoEKernel:
         a_smem_layout_staged: cute.ComposedLayout,
         b_smem_layout_staged: cute.ComposedLayout,
         c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+        w13_c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         epi_tile: cute.Tile,
+        w13_d_tile: cute.Tile,
+        w2_d_tile: cute.Tile,
         # profiler meta
         profiler_buffer: cute.Tensor,
         profiler_ptr: cute.Tensor,
@@ -531,6 +587,8 @@ class SM100MPKIntraMoEKernel:
             scheduler.sync_task()
             is_final_task = scheduler.execute_task(
                 tiled_mma=tiled_mma,
+                w13_d_tiled_mma=w13_d_tiled_mma,
+                w2_d_tiled_mma=w2_d_tiled_mma,
                 w13_tma_atom_a=w13_tma_atom_a,
                 w13_tma_atom_b=w13_tma_atom_b,
                 w13_tma_atom_c=w13_tma_atom_c,
@@ -545,7 +603,10 @@ class SM100MPKIntraMoEKernel:
                 a_smem_layout_staged=a_smem_layout_staged,
                 b_smem_layout_staged=b_smem_layout_staged,
                 c_smem_layout_staged=c_smem_layout_staged,
+                w13_c_smem_layout_staged=w13_c_smem_layout_staged,
                 epi_tile=epi_tile,
+                w13_d_tile=w13_d_tile,
+                w2_d_tile=w2_d_tile,
             )
 
     @cute.jit

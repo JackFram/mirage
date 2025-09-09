@@ -123,6 +123,8 @@ class MPKScheduler:
     def execute_task(
         self,
         tiled_mma: cute.TiledMma,
+        w13_d_tiled_mma: cute.TiledMma,
+        w2_d_tiled_mma: cute.TiledMma,
         w13_tma_atom_a: cute.CopyAtom,
         w13_tma_atom_b: cute.CopyAtom,
         w13_tma_atom_c: cute.CopyAtom,
@@ -137,7 +139,10 @@ class MPKScheduler:
         a_smem_layout_staged: cute.ComposedLayout,
         b_smem_layout_staged: cute.ComposedLayout,
         c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+        w13_c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         epi_tile: cute.Tile,
+        w13_d_tile: cute.Tile,
+        w2_d_tile: cute.Tile,
     ):
         # task decode
         # device kernel execution with switch
@@ -169,6 +174,7 @@ class MPKScheduler:
                 task_runner = FusedFFNW13Task(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute(
                     tiled_mma=tiled_mma,
+                    w13_d_tiled_mma=w13_d_tiled_mma,
                     w13_tma_atom_a=w13_tma_atom_a,
                     w13_tma_atom_b=w13_tma_atom_b,
                     w13_tma_atom_c=w13_tma_atom_c,
@@ -178,8 +184,9 @@ class MPKScheduler:
                     cluster_layout_vmnk=cluster_layout_vmnk,
                     a_smem_layout_staged=a_smem_layout_staged,
                     b_smem_layout_staged=b_smem_layout_staged,
-                    c_smem_layout_staged=c_smem_layout_staged,
+                    c_smem_layout_staged=w13_c_smem_layout_staged,
                     epi_tile=epi_tile,
+                    w13_d_tile=w13_d_tile,
                 )
             elif task_code == MPKTask.kFusedFFNW2Send.value:
                 task_runner = FusedFFNW2SendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
