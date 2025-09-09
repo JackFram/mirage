@@ -500,9 +500,9 @@ class FusedFFNW13Task:
             
             tTR_rC = cute.make_fragment(tTR_rAcc.shape, c_dtype)
             
-            tiled_copy_r2s, tRS_rC, tRS_sC = self.epilog_smem_copy_and_partition(
-                tiled_copy_t2r, tTR_rC, epi_tidx, sC
-            )
+            # tiled_copy_r2s, tRS_rC, tRS_sC = self.epilog_smem_copy_and_partition(
+            #     tiled_copy_t2r, tTR_rC, epi_tidx, sC
+            # )
             
             (
                 w13_tma_atom_c,
@@ -561,50 +561,37 @@ class FusedFFNW13Task:
                 # swiglu on even threads
                 if thread_idx % 2 == 0:
                     for i in cutlass.range(cute.size(tTR_rAcc), unroll_full=True):
-                        tTR_rAcc[i] = silu(tTR_rAcc[i])
+                        tTR_rAcc[i] = silu(tTR_rAcc[i]) 
                 # element prod with odd threads
                 for i in cutlass.range(cute.size(tTR_rAcc), unroll_full=True):
                     tTR_rAcc[i] = tTR_rAcc[i] * cute.arch.shuffle_sync_down(tTR_rAcc[i], offset=1)
                 # store even threads output to shared memory
-                acc_vec = tiled_copy_r2s.retile(tTR_rAcc).load()
-                tRS_rC.store(acc_vec.to(c_dtype))
-                
-                if thread_idx == 0:
-                    # print(tiled_copy_r2s)
-                    cute.printf(tRS_rC.shape, sC.shape)
-                # TODO(Zhihao): continue here to see if we need swizzle for r2s transpose
-                # #
-                # # Store C to shared memory
-                # #
-                # epi_buffer = subtile_idx % num_c_stage
-                # cute.copy(
-                #     tiled_copy_r2s,
-                #     tRS_rC,
-                #     tRS_sC[(None, None, None, epi_buffer)],
-                # )
-                # # Fence and barrier to make sure shared memory store is visible to TMA store
-                # cute.arch.fence_proxy(
-                #     cute.arch.ProxyKind.async_shared,
-                #     space=cute.arch.SharedSpace.shared_cta,
-                # )
+                epi_buffer = subtile_idx % num_c_stage
+                if thread_idx % 2 == 0:
+                    sC[None, thread_idx // 2, epi_buffer].store(tTR_rAcc.load().to(c_dtype))
+                # Fence and barrier to make sure shared memory store is visible to TMA store
+                cute.arch.fence_proxy(
+                    cute.arch.ProxyKind.async_shared,
+                    space=cute.arch.SharedSpace.shared_cta,
+                )
                 epilog_threads = 32 * len(epilog_warp_id)
                 cute.arch.barrier(
                     barrier_id=epilog_sync_bar_id,
                     number_of_threads=epilog_threads,
                 )
-                # #
-                # # store C to global memory with TMA
-                # #
-                # if warp_idx == epilog_warp_id[0]:
-                #     cute.copy(
-                #         w13_tma_atom_c,
-                #         bSG_sC[(None, epi_buffer)],
-                #         bSG_gC[(None, subtile_idx)],
-                #     )
-                #     cute.arch.cp_async_bulk_commit_group()
-                #     cute.arch.cp_async_bulk_wait_group(
-                #         num_c_stage - 1, read=True
-                #     )
+                #
+                # store C to global memory with TMA
+                #
+                if warp_idx == epilog_warp_id[0]:
+                    cute.copy(
+                        w13_tma_atom_c,
+                        bSG_sC[(None, epi_buffer)],
+                        bSG_gC[(None, subtile_idx)],
+                    )
+                    cute.arch.cp_async_bulk_commit_group()
+                    cute.arch.cp_async_bulk_wait_group(
+                        num_c_stage - 1, read=True
+                    )
                 cute.arch.barrier(
                     barrier_id=epilog_sync_bar_id,
                     number_of_threads=epilog_threads,
