@@ -565,8 +565,8 @@ class FusedFFNW2SendTask:
                 if thread_idx % num_vec == 0 and valid_flag == 1:
                     remote_count_tensor = self.get_all_gather_count_buffer_ptr(
                         count_buffer_ptr,
-                        0,
-                        0,
+                        src_rank_idx,
+                        src_token_idx,
                     )
                     
                     ret_count = inline_ptx.atomic_add_flag_release_sys_global_u32(
