@@ -25,7 +25,14 @@ from mpk_cute_dsl.const_param import ConstParam
 """
 A persistent MoE kernel (dispatch+FFN+combine) with cute DSL on blackwell (SM100).
 TODO(Zhihao): 
-  1. Create a customized buffer class for moe communication buffer management
+  1. Optimize dispatch send/recv latency
+  2. Overlapping FFN tasks
+  3. Low precision support (e.g., fp8)
+  4. Correctness and performance testing and benchmarking
+  5. Move MPK counter reset in the termination task
+  6. Need to modify ffn epilogue to support non-swapAB case
+  7. Correct shared memory layout for swapAB case (W13 task)
+  8. Add acq/rel pattern for data consistency
 """
 
 class SM100MPKIntraMoEKernel:
@@ -115,6 +122,7 @@ class SM100MPKIntraMoEKernel:
         """
         
         assert not self.moe_param.use_2cta_instrs, "we don't use 2cta instrs for MPK MoE currently"
+        assert self.moe_param.swapAB, "we always use swapAB for MPK MoE currently"
 
         self.cta_group = tcgen05.CtaGroup.ONE
 
@@ -131,6 +139,7 @@ class SM100MPKIntraMoEKernel:
             self.w13_c_tensor = self.kernel_param.ffn_fused_w13_output_tensor
             self.w2_a_tensor = self.kernel_param.w2_tensor
             self.w2_b_tensor = self.kernel_param.ffn_fused_w13_output_tensor
+            self.w2_c_tensor = self.kernel_param.ffn_fused_w2_output_tensor
             self.d_mma_tiler = (self.mma_tiler[1], self.mma_tiler[0], self.mma_tiler[2])
         else:
             self.a_dtype = self.i_dtype
@@ -143,6 +152,7 @@ class SM100MPKIntraMoEKernel:
             self.w13_c_tensor = self.kernel_param.ffn_fused_w13_output_tensor
             self.w2_a_tensor = self.kernel_param.ffn_fused_w13_output_tensor
             self.w2_b_tensor = self.kernel_param.w2_tensor
+            self.w2_c_tensor = self.kernel_param.ffn_fused_w2_output_tensor
             self.d_mma_tiler = self.mma_tiler
 
         # Configure tiled mma
@@ -234,7 +244,8 @@ class SM100MPKIntraMoEKernel:
             if cutlass.const_expr(self.moe_param.use_tma_store)
             else None
         )
-        self.c_smem_layout_staged = (
+
+        self.w2_c_smem_layout_staged = (
             sm100_utils.make_smem_layout_epi(
                 self.o_dtype,
                 self.o_layout,
@@ -244,6 +255,16 @@ class SM100MPKIntraMoEKernel:
             if cutlass.const_expr(self.moe_param.use_tma_store)
             else None
         )
+        
+        if self.moe_param.swapAB:
+            # remove smem swizzle for C as we are using swapAB
+            self.w13_c_smem_layout_staged = cute.make_composed_layout(
+                cute.make_swizzle(0, 3, 4), 0, self.w13_c_smem_layout_staged.outer
+            )
+            # w2_layout_atom_outer = cute.make_layout((self.num_c_stage, 32, 128))
+            self.w2_c_smem_layout_staged = cute.make_composed_layout(
+                cute.make_swizzle(0, 3, 4), 0, self.w2_c_smem_layout_staged.outer
+            )
         # Compute the number of tensor memory allocation columns
         self.num_tmem_alloc_cols = compute_num_tmem_alloc_cols(
             tiled_mma, self.mma_tiler, self.num_acc_stage
@@ -382,26 +403,26 @@ class SM100MPKIntraMoEKernel:
                 epi_smem_layout,
                 c_cta_v_layout,
             )
-        # TODO(Zhihao): revisit here for w2 task
-        # # Setup TMA store for C in w2 task
-        # tma_atom_w2_c = None
-        # tma_tensor_w2_c = None
-        # if cutlass.const_expr(self.moe_param.use_tma_store):
-        #     c_cta_v_layout = cute.composition(
-        #         cute.make_identity_layout(self.w2_c_tensor.shape), self.w2_d_tile
-        #     )
-        #     epi_smem_layout = cute.slice_(self.c_smem_layout_staged, (None, None, 0))
-        #     tma_atom_w2_c, tma_tensor_w2_c = cpasync.make_tiled_tma_atom(
-        #         cpasync.CopyBulkTensorTileS2GOp(),
-        #         self.w2_c_tensor,
-        #         epi_smem_layout,
-        #         c_cta_v_layout, 
-        #     )
+
+        # Setup TMA store for C in w2 task
+        tma_atom_w2_c = None
+        tma_tensor_w2_c = None
+        if cutlass.const_expr(self.moe_param.use_tma_store):
+            c_cta_v_layout = cute.composition(
+                cute.make_identity_layout(self.w2_c_tensor.shape), self.w2_d_tile
+            )
+            epi_smem_layout = cute.slice_(self.w2_c_smem_layout_staged, (None, None, 0))
+            tma_atom_w2_c, tma_tensor_w2_c = cpasync.make_tiled_tma_atom(
+                cpasync.CopyBulkTensorTileS2GOp(),
+                self.w2_c_tensor,
+                epi_smem_layout,
+                c_cta_v_layout, 
+            )
 
         self.buffer_align_bytes = 1024 # align to 1KB for smem swizzle requirement
         
         c_smem_size = (
-            cute.cosize(self.c_smem_layout_staged.outer)
+            cute.cosize(self.w2_c_smem_layout_staged.outer)
             if cutlass.const_expr(self.moe_param.use_tma_store)
             else 0
         )
@@ -414,18 +435,6 @@ class SM100MPKIntraMoEKernel:
         
         @cute.struct
         class SharedStorage:
-            send_index_buffer: cute.struct.MemRange[
-                cutlass.Int32, 1
-            ]
-            mpk_task_sync_buffer: cute.struct.MemRange[
-                cutlass.Int32, 1
-            ]
-            mpk_worker_sync_buffer: cute.struct.MemRange[
-                cutlass.Int32, 16
-            ]
-            expert_send_count: cute.struct.MemRange[
-                cutlass.Int32, self.num_local_experts * self.num_local_ranks
-            ]
             ab_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_ab_stage]
             ab_empty_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_ab_stage]
             acc_full_mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.num_acc_stage]
@@ -454,6 +463,20 @@ class SM100MPKIntraMoEKernel:
                 ],
                 self.buffer_align_bytes,
             ]
+            # Question(Zhihao): why moving here will work? Maybe a conflict or layout issue with mbars.
+            send_index_buffer: cute.struct.MemRange[
+                cutlass.Int32, 1
+            ]
+            mpk_task_sync_buffer: cute.struct.MemRange[
+                cutlass.Int32, 1
+            ]
+            mpk_worker_sync_buffer: cute.struct.MemRange[
+                cutlass.Int32, 16
+            ]
+            expert_send_count: cute.struct.MemRange[
+                cutlass.Int32, self.num_local_experts * self.num_local_ranks
+            ]
+
 
         self.shared_storage = SharedStorage
         
@@ -462,6 +485,7 @@ class SM100MPKIntraMoEKernel:
             hidden_dim_in_bytes=self.hidden_dim_in_bytes,
             inter_dim=self.moe_param.inter_dim,
             moe_in_dtype=self.moe_param.in_dtype,
+            moe_out_dtype=self.moe_param.out_dtype,
             num_topk=self.moe_param.num_topk,
             num_tokens_per_rank=self.num_tokens_per_rank,
             num_local_experts=self.num_local_experts,
@@ -470,6 +494,7 @@ class SM100MPKIntraMoEKernel:
             token_buffer_offset_in_bytes=self.token_buffer_offset_in_bytes,
             count_buffer_offset_in_bytes=self.count_buffer_offset_in_bytes,
             dispatch_token_stride=self.dispatch_token_stride,
+            combine_token_stride=self.combine_token_stride,
             num_worker_warps=self.num_worker_warp,
             thr_tile_shape=self.thr_tile_shape,
             mma_tiler=self.mma_tiler,
@@ -502,15 +527,17 @@ class SM100MPKIntraMoEKernel:
             w13_tma_atom_c=tma_atom_w13_c,
             w2_tma_atom_a=tma_atom_w2_a,
             w2_tma_atom_b=tma_atom_w2_b,
+            w2_tma_atom_c=tma_atom_w2_c,
             w13_mA_mkl=tma_tensor_w13_a,
             w13_mB_nkl=tma_tensor_w13_b,
             w2_mA_mkl=tma_tensor_w2_a,
             w2_mB_nkl=tma_tensor_w2_b,
             w13_mC_mnl=tma_tensor_w13_c,
+            w2_mC_mnl=tma_tensor_w2_c,
             cluster_layout_vmnk=self.cluster_layout_vmnk,
             a_smem_layout_staged=self.a_smem_layout_staged,
             b_smem_layout_staged=self.b_smem_layout_staged,
-            c_smem_layout_staged=self.c_smem_layout_staged,
+            w2_c_smem_layout_staged=self.w2_c_smem_layout_staged,
             w13_c_smem_layout_staged=self.w13_c_smem_layout_staged,
             epi_tile=self.epi_tile,
             w13_d_tile=self.w13_d_tile,
@@ -541,15 +568,17 @@ class SM100MPKIntraMoEKernel:
         w13_tma_atom_c: cute.CopyAtom,
         w2_tma_atom_a: cute.CopyAtom,
         w2_tma_atom_b: cute.CopyAtom,
+        w2_tma_atom_c: cute.CopyAtom,
         w13_mA_mkl: cute.Tensor,
         w13_mB_nkl: cute.Tensor,
         w2_mA_mkl: cute.Tensor,
         w2_mB_nkl: cute.Tensor,
         w13_mC_mnl: cute.Tensor,
+        w2_mC_mnl: cute.Tensor,
         cluster_layout_vmnk: cute.Layout,
         a_smem_layout_staged: cute.ComposedLayout,
         b_smem_layout_staged: cute.ComposedLayout,
-        c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+        w2_c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         w13_c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         epi_tile: cute.Tile,
         w13_d_tile: cute.Tile,
@@ -594,15 +623,17 @@ class SM100MPKIntraMoEKernel:
                 w13_tma_atom_c=w13_tma_atom_c,
                 w2_tma_atom_a=w2_tma_atom_a,
                 w2_tma_atom_b=w2_tma_atom_b,
+                w2_tma_atom_c=w2_tma_atom_c,
                 w13_mA_mkl=w13_mA_mkl,
                 w13_mB_nkl=w13_mB_nkl,
                 w2_mA_mkl=w2_mA_mkl,
                 w2_mB_nkl=w2_mB_nkl,
                 w13_mC_mnl=w13_mC_mnl,
+                w2_mC_mnl=w2_mC_mnl,
                 cluster_layout_vmnk=cluster_layout_vmnk,
                 a_smem_layout_staged=a_smem_layout_staged,
                 b_smem_layout_staged=b_smem_layout_staged,
-                c_smem_layout_staged=c_smem_layout_staged,
+                w2_c_smem_layout_staged=w2_c_smem_layout_staged,
                 w13_c_smem_layout_staged=w13_c_smem_layout_staged,
                 epi_tile=epi_tile,
                 w13_d_tile=w13_d_tile,
@@ -675,7 +706,7 @@ class SM100MPKIntraMoEKernel:
                     rank, 
                     index,
                 )
-                inline_ptx.add_flag_release(
+                inline_ptx.atomic_add_flag_release(
                     remote_count_tensor,
                     cutlass.Uint32(1),
                 )
@@ -812,60 +843,6 @@ class SM100MPKIntraMoEKernel:
                 dtype=cutlass.Uint32,
                 offset=self.combine_buffer_offset_in_bytes,
                 layout=cute.make_layout((1,), stride=(1,)),
-                ptr_i64=buffer_ptr_tensor[rank],
-            )
-    
-    def get_dispatch_token_ptr_buffer(
-        self,
-        buffer_ptr_tensor: cute.Tensor,
-        rank: cutlass.Int32,
-        expert_idx: cutlass.Int32,
-        recv_token_idx: cutlass.Int64,
-    ):
-        """
-        Get the token pointer buffer from the buffer pointer.
-        Args:
-            ptr_i64 (cutlass.Int64): The pointer to the buffer.
-            rank (cutlass.Int32): The rank of the process.
-        Returns:
-            cute.Tensor: The token pointer buffer.
-        """
-
-        ptr_offset = self.token_buffer_offset_in_bytes
-        ptr_offset += (expert_idx * self.max_num_tokens + recv_token_idx) * self.dispatch_token_stride
-
-        # cute.printf(">?? rank: {}, expert_idx: {}, recv_token_idx: {}, offset: {}", rank, expert_idx, recv_token_idx, offset)
-        # cute.printf(">?? token_buffer_offset_in_bytes: {}", self.token_buffer_offset_in_bytes)
-
-        return self.make_global_tensor_from_buffer_ptr(
-                dtype=self.moe_param.in_dtype,
-                offset=ptr_offset,
-                layout=cute.make_layout((1, self.hidden_dim), stride=(self.hidden_dim, 1)),
-                ptr_i64=buffer_ptr_tensor[rank],
-            )
-
-    def get_dispatch_meta_ptr_buffer(
-        self,
-        buffer_ptr_tensor: cute.Tensor,
-        rank: cutlass.Int32,
-        expert_idx: cutlass.Int32,
-        recv_token_idx: cutlass.Int64,
-    ):
-        """
-        Get the meta pointer buffer from the buffer pointer.
-        Args:
-            ptr_i64 (cutlass.Int64): The pointer to the buffer.
-            rank (cutlass.Int32): The rank of the process.
-        Returns:
-            cute.Tensor: The meta pointer buffer.
-        """
-        ptr_offset = self.token_buffer_offset_in_bytes
-        ptr_offset += (expert_idx * self.max_num_tokens + recv_token_idx) * self.dispatch_token_stride
-
-        return self.make_global_tensor_from_buffer_ptr(
-                dtype=cutlass.Int32,
-                offset=ptr_offset + self.hidden_dim_in_bytes,
-                layout=cute.make_layout((1), stride=(1)),
                 ptr_i64=buffer_ptr_tensor[rank],
             )
     

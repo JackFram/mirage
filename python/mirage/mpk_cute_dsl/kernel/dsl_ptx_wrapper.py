@@ -142,7 +142,7 @@ def st_flag_relaxed_gpu_u32(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None,
     )
 
 @dsl_user_op
-def add_flag_release(sync_tensor: cute.Tensor, value: Uint32, *, loc=None, ip=None) -> Uint32:
+def atomic_add_flag_release_sys_global_u32(sync_tensor: cute.Tensor, value: Uint32, *, loc=None, ip=None) -> Uint32:
     flag_addr_ptr_i64 = sync_tensor.iterator.toint(loc=loc, ip=ip).ir_value()
     return Uint32(
         llvm.inline_asm(

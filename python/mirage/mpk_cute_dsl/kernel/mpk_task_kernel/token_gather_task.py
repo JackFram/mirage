@@ -71,18 +71,20 @@ class TokenGatherTask:
         gemm_tile_bar_offset = self.const_param.gemm_tile_bar_offset
         ffn_w13_task_num = self.const_param.ffn_w13_task_num
         hidden_dim = self.const_param.hidden_dim
+        mpk_queue_len = self.const_param.mpk_queue_len
 
         src_expert = self.kernel_param.src_expert
         src_offset = self.kernel_param.src_offset
         src_rank = self.kernel_param.src_rank
         src_token = self.kernel_param.src_token
+        src_index = self.kernel_param.src_index
         local_buffer_ptr = self.kernel_param.local_buffer_ptr
         dispatch_recv_token_tensor = self.kernel_param.dispatch_recv_token_tensor
+        combine_info_tensor = self.kernel_param.combine_info_tensor
         mpk_task_barrier = self.kernel_param.mpk_task_barrier
         mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
         mpk_task_queue = self.kernel_param.mpk_task_queue
-        mpk_queue_len = self.const_param.mpk_queue_len
-
+        
         # token gather kernel here
         
         dst_expert_offset = src_offset[token_idx]
@@ -109,26 +111,35 @@ class TokenGatherTask:
         cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
         
         if thread_idx == 0:
+            # update combine info tensor
+            # cute.printf("processing token-{}", token_idx)
+            src_rank_idx = src_rank[token_idx]
+            src_expert_idx = src_expert[token_idx]
+            src_index_idx = src_index[token_idx]
+            info_packed = cutlass.Uint32((1 << cutlass.Uint32(17)) | (src_rank_idx << cutlass.Uint32(13)) | (src_expert_idx << cutlass.Uint32(8)) | cutlass.Uint32(src_index_idx))
+            inline_ptx.st_flag_relaxed_gpu_u32(combine_info_tensor[dst_expert, dst_expert_offset, None], info_packed)
+
+            # trigger ffn task based on tile-level token arrival
             token_tile_idx = dst_expert_offset // token_tile_size
-            tile_group_sync_id = gemm_tile_bar_offset + dst_expert * token_tile_per_expert + token_tile_idx
+            tile_group_sync_id = gemm_tile_bar_offset + dst_expert * token_tile_per_expert + token_tile_idx            
             arrived_token_count = inline_ptx.atomic_add(mpk_task_barrier[tile_group_sync_id, None], 1) + 1
-            self.worker_sync_buffer[0] = 0
-            self.worker_sync_buffer[1] = token_tile_idx
+            self.worker_sync_buffer[4] = 0
+            self.worker_sync_buffer[5] = token_tile_idx
             # normal tokens
             if last_tile_token_count == 0:
                 if arrived_token_count == token_tile_size:
-                    self.worker_sync_buffer[0] = 1
+                    self.worker_sync_buffer[4] = 1
             # last token that launch the fused ffn task
             else:
                 # cute.printf("expert-{}, relative offset-{}, tile_group_sync_id-{}, arrived_token_count-{}, expected_token_count-{}", dst_expert, dst_expert_offset, tile_group_sync_id, arrived_token_count, last_tile_token_count)
                 while(cutlass.dynamic_expr(arrived_token_count != last_tile_token_count)):
                     arrived_token_count = inline_ptx.ld_flag_relaxed_gpu_u32(mpk_task_barrier[tile_group_sync_id, None])
-                self.worker_sync_buffer[0] = 1
+                self.worker_sync_buffer[4] = 1
 
         cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
-        token_tile_idx = self.worker_sync_buffer[1]
+        token_tile_idx = self.worker_sync_buffer[5]
         
-        if self.worker_sync_buffer[0] == 1:
+        if self.worker_sync_buffer[4] == 1:
             # add fused ffn task to the queue
             for ffn_task_id in range(thread_idx, ffn_w13_task_num, 32 * num_worker_warps):
                 ffn_task_desc = cutlass.Uint32((MPKTask.kFusedFFNW13.value << cutlass.Uint32(28)) | (dst_expert << cutlass.Uint32(16)) | (token_tile_idx << cutlass.Uint32(8)) | cutlass.Uint32(ffn_task_id))
@@ -136,7 +147,7 @@ class TokenGatherTask:
                     mpk_task_produce_idx,
                     cutlass.Int32(1),
                 ) % cutlass.Int32(mpk_queue_len)
-                inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], ffn_task_desc)
+                inline_ptx.st_flag_release(mpk_task_queue[task_write_idx, None], ffn_task_desc)
 
     @cute.jit
     def make_global_tensor_from_buffer_ptr(

@@ -31,7 +31,7 @@ class HistAll2AllTask:
         self.task_name = "Hist+All2All"
         
         self.expert_send_count = self.smem_storage.expert_send_count.get_tensor(
-            cute.make_layout((32, 1), stride=(1, 1))
+            cute.make_layout((self.const_param.num_local_experts*self.const_param.num_local_ranks, 1), stride=(1, 1))
         )
 
     def __extract_mlir_values__(self):

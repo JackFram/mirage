@@ -14,6 +14,7 @@ class ConstParam:
             hidden_dim_in_bytes: cutlass.Constexpr[int],
             inter_dim: cutlass.Constexpr[int],
             moe_in_dtype: cutlass.Constexpr[torch.dtype],
+            moe_out_dtype: cutlass.Constexpr[torch.dtype],
             num_topk: cutlass.Constexpr[int],
             num_tokens_per_rank: cutlass.Constexpr[int],
             num_local_experts: cutlass.Constexpr[int],
@@ -22,6 +23,7 @@ class ConstParam:
             token_buffer_offset_in_bytes: cutlass.Constexpr[int],
             count_buffer_offset_in_bytes: cutlass.Constexpr[int],
             dispatch_token_stride: cutlass.Constexpr[int],
+            combine_token_stride: cutlass.Constexpr[int],
             # mpk param
             mpk_queue_len: cutlass.Constexpr[int],
             num_worker_warps: cutlass.Constexpr[int],
@@ -111,12 +113,14 @@ class ConstParam:
         self.token_buffer_offset_in_bytes = token_buffer_offset_in_bytes
         self.count_buffer_offset_in_bytes = count_buffer_offset_in_bytes
         self.dispatch_token_stride = dispatch_token_stride
+        self.combine_token_stride = combine_token_stride
 
         # moe const parameters
         self.hidden_dim = hidden_dim
         self.inter_dim = inter_dim
         self.hidden_dim_in_bytes = hidden_dim_in_bytes
         self.moe_in_dtype = moe_in_dtype
+        self.moe_out_dtype = moe_out_dtype
         self.num_topk = num_topk
         self.num_tokens_per_rank = num_tokens_per_rank
         self.num_local_experts = num_local_experts

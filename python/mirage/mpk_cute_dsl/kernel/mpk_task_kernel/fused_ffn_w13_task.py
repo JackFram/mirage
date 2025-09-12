@@ -69,7 +69,10 @@ class FusedFFNW13Task:
         epi_tile: cute.Tile,
         w13_d_tile: cute.Tile,
     ):
-        # Execute the combine receive task
+        # Execute the fused_ffn_w13 task
+        
+        # inline_ptx.nanosleep(4000) # figuring this out, might relate to task deadlock issue
+            
         self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="begin")
         self.fused_ffn_w13(
             tiled_mma=tiled_mma,
@@ -87,6 +90,7 @@ class FusedFFNW13Task:
             epi_tile=epi_tile,
             w13_d_tile=w13_d_tile,
         )
+        cute.arch.barrier(barrier_id=self.const_param.worker_sync_bar_id, number_of_threads=self.const_param.num_worker_warps * 32)
         self.task_update()
         self.profiler.profile_event(event_name="Fused-FFN-W13", event_type="end")
     
@@ -126,7 +130,6 @@ class FusedFFNW13Task:
         cta_sync_bar_id = self.const_param.cta_sync_bar_id
         epilog_sync_bar_id = self.const_param.epilog_sync_bar_id
         ffn_w13_k_cnt = self.const_param.ffn_w13_k_cnt
-        ffn_w13_k_cnt = 1
         num_tma_load_bytes = self.const_param.num_tma_load_bytes
         tmem_ptr_sync_bar_id = self.const_param.tmem_ptr_sync_bar_id
         c_dtype = self.const_param.c_dtype
@@ -268,7 +271,7 @@ class FusedFFNW13Task:
         cute.arch.barrier(
             barrier_id=cta_sync_bar_id, number_of_threads=num_worker_warps * 32
         )
-
+        
         #
         # Specialized TMA load warp
         #
@@ -298,7 +301,6 @@ class FusedFFNW13Task:
                 tma_wr_ab_empty_phase,
             )
             
-
             for k_block in cutlass.range(0, ffn_w13_k_cnt, 1, unroll=1):
                 tma_wr_k_block_next = tma_wr_k_block + 1
                 smem_wr_buffer_next = tma_wr_k_block_next % num_ab_stage
@@ -398,7 +400,7 @@ class FusedFFNW13Task:
             #
             # Mma mainloop
             #
-            for k_block in cutlass.range_constexpr(ffn_w13_k_cnt, unroll_full=True):
+            for k_block in cutlass.range(ffn_w13_k_cnt, unroll_full=True):
                 mma_rd_k_block_next = cutlass.Int32(k_block + 1)
                 smem_rd_buffer_next = mma_rd_k_block_next % num_ab_stage
                 mma_rd_ab_full_phase_next = (
@@ -455,7 +457,6 @@ class FusedFFNW13Task:
                     None,  # acc_full_mcast_mask
                     cta_group,
                 )
-                
         #
         # Specialized epilogue warps
         #
@@ -498,20 +499,11 @@ class FusedFFNW13Task:
                 epi_tidx, tCtAcc_base, tCgC, epi_tile, False
             )
             
-            tTR_rC = cute.make_fragment(tTR_rAcc.shape, c_dtype)
-            
-            # tiled_copy_r2s, tRS_rC, tRS_sC = self.epilog_smem_copy_and_partition(
-            #     tiled_copy_t2r, tTR_rC, epi_tidx, sC
-            # )
-            
             (
                 w13_tma_atom_c,
                 bSG_sC,
                 bSG_gC_partitioned,
             ) = self.epilog_gmem_copy_and_partition(w13_tma_atom_c, tCgC, w13_d_tile, sC)
-            
-            # if thread_idx == 0:
-            #     cute.printf(bSG_gC_partitioned.shape, tCgC.shape, w13_d_tile[0], w13_d_tile[1], sC.shape)
             
             mma_tile_coord_mnl = (tile_idx, ffn_w13_task_id, expert_idx)
             
@@ -553,9 +545,6 @@ class FusedFFNW13Task:
                 tTR_tAcc_mn = tTR_tAcc[(None, None, None, subtile_idx)]
                 cute.copy(tiled_copy_t2r, tTR_tAcc_mn, tTR_rAcc)
                 
-                
-                # # TODO(Zhihao): add epilogue fusion and swapAB here
-                
                 #
                 # swiglu and element prod in a warp (even threads for w1 output and odd threads for w3 output)
                 # swiglu on even threads
@@ -565,7 +554,7 @@ class FusedFFNW13Task:
                 # element prod with odd threads
                 for i in cutlass.range(cute.size(tTR_rAcc), unroll_full=True):
                     tTR_rAcc[i] = tTR_rAcc[i] * cute.arch.shuffle_sync_down(tTR_rAcc[i], offset=1)
-                # store even threads output to shared memory
+                # store even threads output to shared memory with transpose for swapAB
                 epi_buffer = subtile_idx % num_c_stage
                 if thread_idx % 2 == 0:
                     sC[None, thread_idx // 2, epi_buffer].store(tTR_rAcc.load().to(c_dtype))
@@ -625,81 +614,7 @@ class FusedFFNW13Task:
                     (ab_empty_mbar_ptr + ((ffn_w13_k_cnt - 1) % num_ab_stage)),
                     (((ffn_w13_k_cnt - 1) // num_ab_stage) % 2),
                 )
-
         # end of the kernel
-
-    @cute.jit
-    def task_update(
-        self,
-    ):
-        thread_idx, _, _ = cute.arch.thread_idx()
-        expert_idx = (self.task_desc >> 16) & cutlass.Uint32(0x000000FF)
-        tile_idx = (self.task_desc >> 8) & cutlass.Uint32(0x000000FF)
-
-        ffn_w2_bar_offset = self.const_param.ffn_w2_bar_offset
-        token_tile_per_expert = self.const_param.token_tile_per_expert
-        ffn_w13_task_num = self.const_param.ffn_w13_task_num
-        ffn_w2_task_num = self.const_param.ffn_w2_task_num
-        worker_sync_bar_id = self.const_param.worker_sync_bar_id
-        num_worker_warps = self.const_param.num_worker_warps
-        tile_count_sync_id = self.const_param.tile_count_sync_offset
-        num_local_experts = self.const_param.num_local_experts
-        num_tokens_per_rank = self.const_param.num_tokens_per_rank
-        num_workers = self.const_param.num_workers
-
-        mpk_task_barrier = self.kernel_param.mpk_task_barrier
-        mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
-        mpk_task_queue = self.kernel_param.mpk_task_queue
-        mpk_queue_len = self.const_param.mpk_queue_len
-        
-        if thread_idx == 0:
-            tile_group_sync_id = ffn_w2_bar_offset + expert_idx * token_tile_per_expert + tile_idx
-            arrived_tile_count = inline_ptx.atomic_add(mpk_task_barrier[tile_group_sync_id, None], 1) + 1
-            self.worker_sync_buffer[0] = arrived_tile_count
-            
-        cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
-        arrived_tile_count = self.worker_sync_buffer[0]
-        
-        if arrived_tile_count == ffn_w13_task_num:
-            # add fused_ffn_w2 task to the task queue
-            for ffn_w2_task_id in range(thread_idx, ffn_w2_task_num, 32 * num_worker_warps):
-                ffn_task_desc = cutlass.Uint32((MPKTask.kFusedFFNW2Send.value << cutlass.Uint32(28)) | (expert_idx << cutlass.Uint32(16)) | (tile_idx << cutlass.Uint32(8)) | cutlass.Uint32(ffn_w2_task_id))
-                task_write_idx = inline_ptx.atomic_add(
-                    mpk_task_produce_idx,
-                    cutlass.Int32(1),
-                ) % cutlass.Int32(mpk_queue_len)
-                inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], ffn_task_desc)
-            
-            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
-            
-            if thread_idx == 0:
-                packed_value = inline_ptx.atomic_add(mpk_task_barrier[tile_count_sync_id, None], 1)
-                total_tile_count = packed_value >> 24
-                arrived_expert_count = (packed_value >> 16) & 0x000000FF
-                arrived_tile_count = (packed_value & 0x0000FFFF) + 1
-                
-                self.worker_sync_buffer[1] = 0
-                if arrived_expert_count == num_local_experts and arrived_tile_count == total_tile_count:
-                    self.worker_sync_buffer[1] = 1
-                    
-            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
-            # last fused_ffn_w2 task added, now add combine_recv task
-            if self.worker_sync_buffer[1] == 1:
-                for token_idx in range(thread_idx, num_tokens_per_rank, 32 * num_worker_warps):
-                    combine_recv_task_desc = cutlass.Uint32((MPKTask.kCombineRecv.value << cutlass.Uint32(28)) | cutlass.Uint32(token_idx))
-                    task_write_idx = inline_ptx.atomic_add(
-                        mpk_task_produce_idx,
-                        cutlass.Int32(1),
-                    ) % cutlass.Int32(mpk_queue_len)
-                    inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], combine_recv_task_desc)
-                cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
-                for sm_idx in range(thread_idx, num_workers, 32 * num_worker_warps):
-                    terminate_task_desc = cutlass.Uint32((MPKTask.kTerminate.value << cutlass.Uint32(28)))
-                    task_write_idx = inline_ptx.atomic_add(
-                        mpk_task_produce_idx,
-                        cutlass.Int32(1),
-                    ) % cutlass.Int32(mpk_queue_len)
-                    inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], terminate_task_desc)
 
     def epilog_tmem_copy_and_partition(
         self,
@@ -770,47 +685,6 @@ class FusedFFNW13Task:
         )
         return tiled_copy_t2r, tTR_tAcc, tTR_rAcc
     
-    def epilog_smem_copy_and_partition(
-        self,
-        tiled_copy_t2r: cute.TiledCopy,
-        tTR_rC: cute.Tensor,
-        tidx: cutlass.Int32,
-        sC: cute.Tensor,
-    ) -> tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]:
-        """
-        Make tiledCopy for shared memory store, then use it to partition register array (source) and shared memory (destination).
-
-        :param tiled_copy_t2r: The tiled copy operation for tmem to register copy(t2r)
-        :type tiled_copy_t2r: cute.TiledCopy
-        :param tTR_rC: The partitioned accumulator tensor
-        :type tTR_rC: cute.Tensor
-        :param tidx: The thread index in epilogue warp groups
-        :type tidx: cutlass.Int32
-        :param sC: The shared memory tensor to be copied and partitioned
-        :type sC: cute.Tensor
-
-        :return: A tuple containing (tiled_copy_r2s, tRS_rC, tRS_sC) where:
-            - tiled_copy_r2s: The tiled copy operation for register to smem copy(r2s)
-            - tRS_rC: The partitioned tensor C (register source)
-            - tRS_sC: The partitioned tensor C (smem destination)
-        :rtype: Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]
-        """
-        # get const param
-        c_layout = self.const_param.c_layout
-        c_dtype = self.const_param.c_dtype
-        acc_dtype = self.const_param.acc_dtype
-        
-        copy_atom_r2s = sm100_utils.get_smem_store_op(
-            c_layout, c_dtype, acc_dtype, tiled_copy_t2r
-        )
-        tiled_copy_r2s = cute.make_tiled_copy_D(copy_atom_r2s, tiled_copy_t2r)
-        # (R2S, R2S_M, R2S_N, PIPE_D)
-        thr_copy_r2s = tiled_copy_r2s.get_slice(tidx)
-        tRS_sC = thr_copy_r2s.partition_D(sC)
-        # (R2S, R2S_M, R2S_N)
-        tRS_rC = tiled_copy_r2s.retile(tTR_rC)
-        return tiled_copy_r2s, tRS_rC, tRS_sC
-    
     def epilog_gmem_copy_and_partition(
         self,
         tma_atom_c: cute.CopyAtom,
@@ -851,3 +725,82 @@ class FusedFFNW13Task:
             gC_for_tma_partition,
         )
         return tma_atom_c, bSG_sC, bSG_gC
+    
+    @cute.jit
+    def task_update(
+        self,
+    ):
+        thread_idx, _, _ = cute.arch.thread_idx()
+        block_idx, _, _ = cute.arch.block_idx()
+        expert_idx = (self.task_desc >> 16) & cutlass.Uint32(0x000000FF)
+        tile_idx = (self.task_desc >> 8) & cutlass.Uint32(0x000000FF)
+        ffn_w13_task_id = (self.task_desc) & cutlass.Uint32(0x000000FF)
+
+        ffn_w2_bar_offset = self.const_param.ffn_w2_bar_offset
+        token_tile_per_expert = self.const_param.token_tile_per_expert
+        ffn_w13_task_num = self.const_param.ffn_w13_task_num
+        ffn_w2_task_num = self.const_param.ffn_w2_task_num
+        worker_sync_bar_id = self.const_param.worker_sync_bar_id
+        num_worker_warps = self.const_param.num_worker_warps
+        tile_count_sync_id = self.const_param.tile_count_sync_offset
+        num_local_experts = self.const_param.num_local_experts
+        num_tokens_per_rank = self.const_param.num_tokens_per_rank
+        num_workers = self.const_param.num_workers
+
+        mpk_task_barrier = self.kernel_param.mpk_task_barrier
+        mpk_task_produce_idx = self.kernel_param.mpk_task_produce_idx
+        mpk_task_queue = self.kernel_param.mpk_task_queue
+        mpk_queue_len = self.const_param.mpk_queue_len
+        
+        if thread_idx == 0:
+            tile_group_sync_id = ffn_w2_bar_offset + expert_idx * token_tile_per_expert + tile_idx
+            arrived_tile_count = inline_ptx.atomic_add(mpk_task_barrier[tile_group_sync_id, None], 1) + 1
+            # if self.const_param.local_rank == 0:
+            #     cute.printf("expert_idx-{}, arrived_tile_count: {}, ffn_w13_task_num: {}", expert_idx, arrived_tile_count, ffn_w13_task_num)
+            self.worker_sync_buffer[6] = arrived_tile_count
+        
+        cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
+        arrived_tile_count = self.worker_sync_buffer[6]
+        
+        if arrived_tile_count == ffn_w13_task_num:
+            # add fused_ffn_w2 task to the task queue
+            for ffn_w2_task_id in range(thread_idx, ffn_w2_task_num, 32 * num_worker_warps):
+                ffn_task_desc = cutlass.Uint32((MPKTask.kFusedFFNW2Send.value << cutlass.Uint32(28)) | (expert_idx << cutlass.Uint32(16)) | (tile_idx << cutlass.Uint32(8)) | cutlass.Uint32(ffn_w2_task_id))
+                task_write_idx = inline_ptx.atomic_add(
+                    mpk_task_produce_idx,
+                    cutlass.Int32(1),
+                ) % cutlass.Int32(mpk_queue_len)
+                inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], ffn_task_desc)
+            
+            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
+            
+            if thread_idx == 0:
+                packed_value = inline_ptx.atomic_add(mpk_task_barrier[tile_count_sync_id, None], 1)
+                total_tile_count = packed_value >> 24
+                arrived_expert_count = (packed_value >> 16) & 0x000000FF
+                arrived_tile_count = (packed_value & 0x0000FFFF) + 1
+                
+                self.worker_sync_buffer[7] = 0
+                # cute.printf("arrived_tile_count: {}, total_tile_count: {}", arrived_tile_count, total_tile_count)
+                if arrived_expert_count == num_local_experts and arrived_tile_count == total_tile_count:
+                    self.worker_sync_buffer[7] = 1
+                    # cute.printf("adding terminate and combine recv tasks")
+                    
+            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
+            # last fused_ffn_w2 task added, now add combine_recv task
+            if self.worker_sync_buffer[7] == 1:
+                for token_idx in range(thread_idx, num_tokens_per_rank, 32 * num_worker_warps):
+                    combine_recv_task_desc = cutlass.Uint32((MPKTask.kCombineRecv.value << cutlass.Uint32(28)) | cutlass.Uint32(token_idx))
+                    task_write_idx = inline_ptx.atomic_add(
+                        mpk_task_produce_idx,
+                        cutlass.Int32(1),
+                    ) % cutlass.Int32(mpk_queue_len)
+                    inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], combine_recv_task_desc)
+                cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
+                for sm_idx in range(thread_idx, num_workers, 32 * num_worker_warps):
+                    terminate_task_desc = cutlass.Uint32((MPKTask.kTerminate.value << cutlass.Uint32(28)))
+                    task_write_idx = inline_ptx.atomic_add(
+                        mpk_task_produce_idx,
+                        cutlass.Int32(1),
+                    ) % cutlass.Int32(mpk_queue_len)
+                    inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], terminate_task_desc)

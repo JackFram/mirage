@@ -17,13 +17,15 @@ class MoEKernelParam:
             # input/output tensors
             rank_input_tensor: cute.Tensor,
             rank_input_topk_indices: cute.Tensor,
+            rank_input_topk_weights: cute.Tensor,
             num_tokens_per_local_expert_recv: cute.Tensor,
             local_token_send_count_per_expert: cute.Tensor,
             local_token_send_bar_expert: cute.Tensor,
             rank_token_count: cute.Tensor,
             dispatch_recv_token_tensor: cute.Tensor,
             ffn_fused_w13_output_tensor: cute.Tensor,
-            combine_send_token_tensor: cute.Tensor,
+            ffn_fused_w2_output_tensor: cute.Tensor,
+            combine_info_tensor: cute.Tensor,
             output_tensor: cute.Tensor,
             # buffer ptr
             local_buffer_ptr: cute.Tensor,
@@ -46,13 +48,15 @@ class MoEKernelParam:
         self.w2_tensor = w2_tensor
         self.rank_input_tensor = rank_input_tensor
         self.rank_input_topk_indices = rank_input_topk_indices
+        self.rank_input_topk_weights = rank_input_topk_weights
         self.num_tokens_per_local_expert_recv = num_tokens_per_local_expert_recv
         self.local_token_send_count_per_expert = local_token_send_count_per_expert
         self.local_token_send_bar_expert = local_token_send_bar_expert
         self.rank_token_count = rank_token_count
         self.dispatch_recv_token_tensor = dispatch_recv_token_tensor
         self.ffn_fused_w13_output_tensor = ffn_fused_w13_output_tensor
-        self.combine_send_token_tensor = combine_send_token_tensor
+        self.ffn_fused_w2_output_tensor = ffn_fused_w2_output_tensor
+        self.combine_info_tensor = combine_info_tensor
         self.output_tensor = output_tensor
         self.local_buffer_ptr = local_buffer_ptr
         self.remote_buffer_ptr = remote_buffer_ptr
@@ -74,13 +78,15 @@ class MoEKernelParam:
         pointers.extend(get_c_pointers(self.w2_tensor))
         pointers.extend(get_c_pointers(self.rank_input_tensor))
         pointers.extend(get_c_pointers(self.rank_input_topk_indices))
-        pointers.extend(get_c_pointers(self.num_tokens_per_local_expert_recv))  
+        pointers.extend(get_c_pointers(self.rank_input_topk_weights))
+        pointers.extend(get_c_pointers(self.num_tokens_per_local_expert_recv))
         pointers.extend(get_c_pointers(self.local_token_send_count_per_expert))
         pointers.extend(get_c_pointers(self.local_token_send_bar_expert))
         pointers.extend(get_c_pointers(self.rank_token_count))
         pointers.extend(get_c_pointers(self.dispatch_recv_token_tensor))
         pointers.extend(get_c_pointers(self.ffn_fused_w13_output_tensor))
-        pointers.extend(get_c_pointers(self.combine_send_token_tensor))
+        pointers.extend(get_c_pointers(self.ffn_fused_w2_output_tensor))
+        pointers.extend(get_c_pointers(self.combine_info_tensor))
         pointers.extend(get_c_pointers(self.output_tensor))
         pointers.extend(get_c_pointers(self.local_buffer_ptr))
         pointers.extend(get_c_pointers(self.remote_buffer_ptr))
@@ -103,13 +109,15 @@ class MoEKernelParam:
         values.extend(extract_mlir_values(self.w2_tensor))
         values.extend(extract_mlir_values(self.rank_input_tensor))
         values.extend(extract_mlir_values(self.rank_input_topk_indices))
+        values.extend(extract_mlir_values(self.rank_input_topk_weights))
         values.extend(extract_mlir_values(self.num_tokens_per_local_expert_recv))
         values.extend(extract_mlir_values(self.local_token_send_count_per_expert))
         values.extend(extract_mlir_values(self.local_token_send_bar_expert))
         values.extend(extract_mlir_values(self.rank_token_count))
         values.extend(extract_mlir_values(self.dispatch_recv_token_tensor))
         values.extend(extract_mlir_values(self.ffn_fused_w13_output_tensor))
-        values.extend(extract_mlir_values(self.combine_send_token_tensor))
+        values.extend(extract_mlir_values(self.ffn_fused_w2_output_tensor))
+        values.extend(extract_mlir_values(self.combine_info_tensor))
         values.extend(extract_mlir_values(self.output_tensor))
         values.extend(extract_mlir_values(self.local_buffer_ptr))
         values.extend(extract_mlir_values(self.remote_buffer_ptr))
@@ -132,13 +140,15 @@ class MoEKernelParam:
         values.extend(get_mlir_types(self.w2_tensor))
         values.extend(get_mlir_types(self.rank_input_tensor))
         values.extend(get_mlir_types(self.rank_input_topk_indices))
+        values.extend(get_mlir_types(self.rank_input_topk_weights))
         values.extend(get_mlir_types(self.num_tokens_per_local_expert_recv))
         values.extend(get_mlir_types(self.local_token_send_count_per_expert))
         values.extend(get_mlir_types(self.local_token_send_bar_expert))
         values.extend(get_mlir_types(self.rank_token_count))
         values.extend(get_mlir_types(self.dispatch_recv_token_tensor))
         values.extend(get_mlir_types(self.ffn_fused_w13_output_tensor))
-        values.extend(get_mlir_types(self.combine_send_token_tensor))
+        values.extend(get_mlir_types(self.ffn_fused_w2_output_tensor))
+        values.extend(get_mlir_types(self.combine_info_tensor))
         values.extend(get_mlir_types(self.output_tensor))
         values.extend(get_mlir_types(self.local_buffer_ptr))
         values.extend(get_mlir_types(self.remote_buffer_ptr))
@@ -156,7 +166,7 @@ class MoEKernelParam:
         return values
 
     def __new_from_mlir_values__(self, values: list[ir.Value]) -> "MoEKernelParam":
-        assert len(values) == 25
+        assert len(values) == 27
         value_idx = 0
         new_w13_tensor = new_from_mlir_values(
             self.w13_tensor, [values[value_idx]]
@@ -172,6 +182,10 @@ class MoEKernelParam:
         value_idx += 1
         new_rank_input_topk_indices = new_from_mlir_values(
             self.rank_input_topk_indices, [values[value_idx]]
+        )
+        value_idx += 1
+        new_rank_input_topk_weights = new_from_mlir_values(
+            self.rank_input_topk_weights, [values[value_idx]]
         )
         value_idx += 1
         new_num_tokens_per_local_expert_recv = new_from_mlir_values(
@@ -198,8 +212,12 @@ class MoEKernelParam:
             self.ffn_fused_w13_output_tensor, [values[value_idx]]
         )
         value_idx += 1
-        new_combine_send_token_tensor = new_from_mlir_values(
-            self.combine_send_token_tensor, [values[value_idx]]
+        new_ffn_fused_w2_output_tensor = new_from_mlir_values(
+            self.ffn_fused_w2_output_tensor, [values[value_idx]]
+        )
+        value_idx += 1
+        new_combine_info_tensor = new_from_mlir_values(
+            self.combine_info_tensor, [values[value_idx]]
         )
         value_idx += 1
         new_output_tensor = new_from_mlir_values(
@@ -262,13 +280,15 @@ class MoEKernelParam:
             new_w2_tensor,
             new_rank_input_tensor,
             new_rank_input_topk_indices,
+            new_rank_input_topk_weights,
             new_num_tokens_per_local_expert_recv,
             new_local_token_send_count_per_expert,
             new_local_token_send_bar_expert,
             new_rank_token_count,
             new_dispatch_recv_token_tensor,
             new_ffn_fused_w13_output_tensor,
-            new_combine_send_token_tensor,
+            new_ffn_fused_w2_output_tensor,
+            new_combine_info_tensor,
             new_output_tensor,
             new_local_buffer_ptr,
             new_remote_buffer_ptr,

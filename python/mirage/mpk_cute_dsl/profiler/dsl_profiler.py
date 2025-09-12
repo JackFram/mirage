@@ -92,6 +92,7 @@ class DslProfiler:
                 self.profiler_buffer[insert_idx, None],
                 full_tag
             )
+        cute.arch.sync_warp()
 
 def decode_tag(tag):
     event_tag = int(tag >> 32)

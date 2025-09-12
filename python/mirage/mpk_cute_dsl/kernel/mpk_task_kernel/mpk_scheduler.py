@@ -70,6 +70,7 @@ class MPKScheduler:
         mpk_queue_len = self.const_param.mpk_queue_len
         task_consume_idx = self.kernel_param.mpk_task_consume_idx
         task_queue = self.kernel_param.mpk_task_queue
+
         # specialized scheduler warp 
         if warp_idx == self.scheduler_warp_idx:
             self.profiler.profile_event(event_name="Fetch-Task", event_type="begin")
@@ -130,15 +131,17 @@ class MPKScheduler:
         w13_tma_atom_c: cute.CopyAtom,
         w2_tma_atom_a: cute.CopyAtom,
         w2_tma_atom_b: cute.CopyAtom,
+        w2_tma_atom_c: cute.CopyAtom,
         w13_mA_mkl: cute.Tensor,
         w13_mB_nkl: cute.Tensor,
         w2_mA_mkl: cute.Tensor,
         w2_mB_nkl: cute.Tensor,
         w13_mC_mnl: cute.Tensor,
+        w2_mC_mnl: cute.Tensor,
         cluster_layout_vmnk: cute.Layout,
         a_smem_layout_staged: cute.ComposedLayout,
         b_smem_layout_staged: cute.ComposedLayout,
-        c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
+        w2_c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         w13_c_smem_layout_staged: Union[cute.Layout, cute.ComposedLayout, None],
         epi_tile: cute.Tile,
         w13_d_tile: cute.Tile,
@@ -148,12 +151,16 @@ class MPKScheduler:
         # device kernel execution with switch
         warp_idx = cute.arch.warp_idx()
         warp_idx = cute.arch.make_warp_uniform(warp_idx)
-        
         block_idx, _, _ = cute.arch.block_idx()
         thread_idx, _, _ = cute.arch.thread_idx()
 
         task_code = (self.task_desc >> 28)
         is_final_task = (task_code == MPKTask.kTerminate.value)
+
+        worker_sync_bar_id = self.const_param.worker_sync_bar_id
+        num_worker_warps = self.const_param.num_worker_warps
+        
+        mpk_task_barrier = self.kernel_param.mpk_task_barrier
 
         # executing task with worker warps
         if not is_final_task and warp_idx < self.scheduler_warp_idx:
@@ -190,12 +197,32 @@ class MPKScheduler:
                 )
             elif task_code == MPKTask.kFusedFFNW2Send.value:
                 task_runner = FusedFFNW2SendTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
-                task_runner.execute()
+                task_runner.execute(
+                    tiled_mma=tiled_mma,
+                    w2_d_tiled_mma=w2_d_tiled_mma,
+                    w2_tma_atom_a=w2_tma_atom_a,
+                    w2_tma_atom_b=w2_tma_atom_b,
+                    w2_tma_atom_c=w2_tma_atom_c,
+                    w2_mA_mkl=w2_mA_mkl,
+                    w2_mB_nkl=w2_mB_nkl,
+                    w2_mC_mnl=w2_mC_mnl,
+                    cluster_layout_vmnk=cluster_layout_vmnk,
+                    a_smem_layout_staged=a_smem_layout_staged,
+                    b_smem_layout_staged=b_smem_layout_staged,
+                    c_smem_layout_staged=w2_c_smem_layout_staged,
+                    epi_tile=epi_tile,
+                    w2_d_tile=w2_d_tile,
+                )
             elif task_code == MPKTask.kCombineRecv.value:
                 task_runner = CombineRecvTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
             elif task_code == MPKTask.kTokenGather.value:
                 task_runner = TokenGatherTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
+
+            cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
+
+        # if thread_idx == 0:
+        #     cute.printf("Block {} finished task {}", block_idx, task_code)
 
         return is_final_task
