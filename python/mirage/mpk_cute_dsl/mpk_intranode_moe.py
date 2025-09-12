@@ -10,7 +10,7 @@ import math
 from cutlass.cute.runtime import from_dlpack
 from cutlass.torch import dtype as torch_dtype
 
-import comm
+import mpk_cute_dsl.comm as comm
 
 from moe_utils import MoEParam
 from dist_utils import ProcessGroupInfo, parallel_launch
