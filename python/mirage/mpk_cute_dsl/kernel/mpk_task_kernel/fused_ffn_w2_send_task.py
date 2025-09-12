@@ -568,11 +568,17 @@ class FusedFFNW2SendTask:
                         src_rank_idx,
                         src_token_idx,
                     )
-                    
+                    # TODO(Zhihao): might can use red instructions here
                     ret_count = inline_ptx.atomic_add_flag_release_sys_global_u32(
                         remote_count_tensor,
                         cutlass.Uint32(1),
                     )
+                    
+                    # if ret_count + 1 == 1024 * 40:
+                    #     cute.printf("arrived!")
+                        
+                    # if ret_count + 1 > 1024 * 40:
+                    #     cute.printf("overflow!")
 
             #
             # Async arrive accumulator buffer empty

@@ -90,6 +90,7 @@ class MPKScheduler:
                     # TODO(Zhihao): try ld.relax and also measure the overhead (might slow down works on other warps)
                     task_desc = inline_ptx.ld_flag_relaxed_gpu_u32(task_queue[task_load_idx, None])
                     task_code = task_desc >> 28
+                    inline_ptx.nanosleep(100)
                 # register -> smem task store from scheduler warp
                 self.task_sync_buffer[0] = task_desc
             cute.arch.sync_warp()
@@ -219,7 +220,7 @@ class MPKScheduler:
             elif task_code == MPKTask.kTokenGather.value:
                 task_runner = TokenGatherTask(self.task_desc, self.profiler, self.const_param, self.kernel_param, self.smem_storage)
                 task_runner.execute()
-
+                
             cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
 
         # if thread_idx == 0:

@@ -61,18 +61,34 @@ We have 7 main tasks:
   - [Combine-Recv](https://github.com/JackFram/mirage/blob/blackwell-moe/python/mirage/mpk_cute_dsl/kernel/mpk_task_kernel/combine_recv_task.py)
 
 **HistAll2All**: A single task that check the send count of each **dispatch-send** worker and notify the remote rank.
+  - collect the token dispatch info based on the topk_indices tensor
+  - notify each remote expert on the completion of the send
 
 **Dispatch-Send**: Send each token to its corresponding expert buffer (either remote or local).
+  - send each individual token to the remote expert buffer without synchronization 
+  - only mark the completion of the current token with the **HistAll2All** task through atomic operation over local device memory
 
 **Dispatch-Recv**: Collect the recieved token counts for each expert and dynamically add **token-gather** task into task queue. 
+  - each task will receive all the tokens for a local expert from a remote rank, so there is num_local_experts * num_ranks tasks in total
+  - collect token infos at the receiver end and also add the corresponding **token-gather** tasks.
 
 **Token-Gather**: Gather tokens from different ranks for the local experts and dynamically add **fused-ffn-w13** tasks to the queue based on the gathered counts.
+  - each task will transfer the token from the communication buffer to a continuous chunk of global memory that is the input for the **fused-ffn-w13** task
+  - each task will also dynamically add the **fused-ffn-w13** task once certain number of tokens have already arrived.
 
 **Fused-FFN-W13**: Fused W13 GeMM + SwapAB + SwiGLU and add **fused-ffn-w2-send**, **combine-recv**, and **terminate** task to the queue. 
+  
+  - We fuse the W1 and W3 GeMM into a single GeMM with a novel layout (W13-interleaved) where we can directly do the SwiGLU op in the register memory during the epilogue stage.
+  - Dynamically add **fused-ffn-w2-send** to the task queue based on the completion of the current token tiles.
+  - Add **combine-recv**, and **terminate** task to the queue after all the **fused-ffn-w2-send** tasks have been added.
 
 **Fused-FFN-W2**: Fused W2 GeMM + SwapAB + send back the tokens to its corresponding rank. 
+  - W2 GeMM with SwapAB
+  - Send the tiled output directly to the communication buffer 
 
 **Combine-Recv**: Recieve tokens from the output of FFN tasks with weighted summation.
+  - Each token is waiting for all its topk output from FFN tasks to return
+  - Then reduction is performed where the results are stored to the output tensor. 
 
 <!-- ROADMAP -->
 ## Roadmap

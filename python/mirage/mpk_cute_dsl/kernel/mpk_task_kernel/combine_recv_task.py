@@ -78,9 +78,9 @@ class CombineRecvTask:
             )
 
             # TODO(Zhihao): sometimes might hang here, figure out why
-            # count = inline_ptx.ld_flag_relaxed_sys_u32(local_count_tensor)
-            # while(cutlass.dynamic_expr(count != num_tokens_per_rank * ffn_w2_task_num)):
-            #     count = inline_ptx.ld_flag_relaxed_sys_u32(local_count_tensor)
+            count = inline_ptx.ld_flag_relaxed_sys_u32(local_count_tensor)
+            while(cutlass.dynamic_expr(count != num_topk * ffn_w2_task_num)):
+                count = inline_ptx.ld_flag_relaxed_sys_u32(local_count_tensor)
         cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
         # reduction over received token 
         thr_tiled_output_tensor = cute.zipped_divide(output_tensor, thr_tile_shape)
