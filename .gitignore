@@ -58,3 +58,9 @@ benchmark/*generated*
 
 # lock
 *.lock
+
+# log
+*.log
+
+# profiled results
+python/mirage/mpk_cute_dsl/results/*

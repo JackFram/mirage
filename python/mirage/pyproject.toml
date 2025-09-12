@@ -6,6 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "mpkmoe"
 version = "0.0.1"
 
+dependencies = [
+    nvidia-cutlass-dsl,
+    tg4perfetto,
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
