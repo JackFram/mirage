@@ -12,13 +12,12 @@ from cutlass.torch import dtype as torch_dtype
 
 import mpk_cute_dsl.comm as comm
 
-from moe_utils import MoEParam
-from dist_utils import ProcessGroupInfo, parallel_launch
-from kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
-from profiler.dsl_profiler import export_to_perfetto_trace
+from mpk_cute_dsl.moe_utils import MoEParam
+from mpk_cute_dsl.dist_utils import ProcessGroupInfo, parallel_launch
+from mpk_cute_dsl.kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
+from mpk_cute_dsl.profiler.dsl_profiler import export_to_perfetto_trace
 from mpk_cute_dsl.param import MoEKernelParam
-
-from mpk_cute_dsl.testing import bench_gpu_time
+from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
 def reset_tensors(dist_param: ProcessGroupInfo):
     torch.cuda.empty_cache()
@@ -29,7 +28,7 @@ def reset_tensors(dist_param: ProcessGroupInfo):
 
     num_ranks = dist_param.world_size
 
-    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 2560, 8, (32 // num_ranks) * num_ranks
+    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 2560, 8, 32
 
     assert num_experts % num_ranks == 0, f"num_experts {num_experts} should be divisible by num_ranks {num_ranks}"
     num_local_experts = num_experts // num_ranks
@@ -50,8 +49,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     gate_scores = torch.randn((num_tokens_per_rank, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_indices = torch.topk(gate_scores, num_topk, dim=-1, largest=True, sorted=False)[1].to(torch.int32)
     topk_weights = torch.randn((num_tokens_per_rank, num_topk), dtype=torch.float32, device='cuda')
-    
-    # Meta Info tensors    
+
+    # Meta Info tensors
     local_token_send_count_per_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     local_token_send_bar_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     rank_token_count = torch.zeros((1), dtype=torch.int32, device='cuda')
@@ -69,19 +68,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     mpk_task_consume_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_barrier = torch.zeros((1024, 1), dtype=torch.int32, device='cuda')
-    
-    # MPK task initialization
-    task_idx = 0
-    mpk_task_queue[task_idx][0] = 0x10000000 # HistAll2All
-    task_idx += 1
-    for i in range(num_tokens_per_rank):
-        mpk_task_queue[task_idx][0] = (0x20000000 | i) # Dispatch-Send
-        task_idx += 1
-    for i in range(num_local_experts * num_ranks):
-        mpk_task_queue[task_idx][0] = (0x30000000 | i) # Dispatch-Recv
-        task_idx += 1
-    
-    mpk_task_produce_idx[0] = task_idx
 
     # Profiler tensor
     profiler_buffer_size = 148 * 9 * 128
@@ -91,11 +77,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     '''
     dispatch
     '''
-    num_tokens_per_local_expert_recv = torch.empty(
-        (num_local_experts, 1),
-        dtype=torch.int32,
-    ).fill_(0).cuda()
-
     # permute for group gemm
     permute_order = (1, 2, 0)
 
@@ -103,6 +84,11 @@ def reset_tensors(dist_param: ProcessGroupInfo):
         (num_local_experts, num_tokens, hidden_dim),
         dtype=torch_dtype(moe_param.in_dtype),
     ).fill_(0).cuda().permute(permute_order) # also the input for the ffn fused w13 task
+    
+    num_tokens_per_local_expert_recv = torch.empty(
+        (num_local_experts, 1),
+        dtype=torch.int32,
+    ).fill_(0).cuda()
 
     '''
     ffn_grouped_gemm
@@ -229,14 +215,100 @@ def reset_tensors(dist_param: ProcessGroupInfo):
             mpk_task_produce_idx=mpk_task_produce_idx_cute,
             mpk_task_barrier=mpk_task_barrier_cute,
         )
-    torch.cuda.synchronize()
     
-    return intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream
+    """
+    Reference implementation for dispatch task here:
+    """
+    
+    input_tensor_ref = input_tensor.clone()
+    topk_indices_ref = topk_indices.clone()
+    dispatch_recv_token_tensor_ref = dispatch_recv_token_tensor.clone()
+    
+    input_tensor_list = [torch.empty_like(input_tensor_ref) for _ in range(num_ranks)]
+    topk_indices_list = [torch.empty_like(topk_indices_ref) for _ in range(num_ranks)]
+
+    dist.all_gather(input_tensor_list, input_tensor_ref)
+    dist.all_gather(topk_indices_list, topk_indices_ref)
+    
+    gathered_input_tensor_ref = torch.cat(input_tensor_list, dim=0)
+    gathered_topk_indices_ref = torch.cat(topk_indices_list, dim=0)
+    
+    num_tokens_per_local_expert_recv_ref = num_tokens_per_local_expert_recv.clone()
+    rank_token_count_ref = rank_token_count.clone()
+    
+    for local_expert_idx in range(num_local_experts):
+        global_expert_idx = local_expert_idx + dist_param.rank * num_local_experts
+        mask = (gathered_topk_indices_ref == global_expert_idx)
+        token_count = mask.sum().item()
+        num_tokens_per_local_expert_recv_ref[local_expert_idx, 0] = token_count
+        rank_token_count_ref[0] += token_count
+    
+    """
+    End of reference implementation
+    """
+    # MPK task initialization
+    task_idx = 0
+    mpk_task_queue[task_idx][0] = (MPKTask.kHistAll2All.value << 28)
+    task_idx += 1
+    for i in range(num_tokens_per_rank):
+        mpk_task_queue[task_idx][0] = (MPKTask.kDispatchSend.value << 28) | i
+        task_idx += 1
+    for i in range(num_local_experts * num_ranks):
+        mpk_task_queue[task_idx][0] = (MPKTask.kDispatchRecv.value << 28) | i
+        task_idx += 1
+    # for i in range(rank_token_count_ref[0].item()):
+    #     mpk_task_queue[task_idx][0] = (MPKTask.kTokenGather.value << 28) | (i << 12)
+    #     task_idx += 1
+    # # add termination task as we are testing dispatch only.
+    # for i in range(148):
+    #     mpk_task_queue[task_idx][0] = (MPKTask.kTerminate.value << 28)
+    #     task_idx += 1
+    
+    mpk_task_produce_idx[0] = task_idx
+
+    def get_ref_dispatch_output(dispatch_recv_token_tensor_ref):
+        for token_idx in range(rank_token_count_ref[0].item()):
+            src_rank_idx = src_rank[token_idx].item()
+            src_token_idx = src_index[token_idx].item()
+            dst_expert_idx = src_expert[token_idx].item()
+            dst_offset = src_offset[token_idx].item()
+            dispatch_recv_token_tensor_ref[dst_offset, :, dst_expert_idx] = gathered_input_tensor_ref[src_rank_idx * num_tokens_per_rank + src_token_idx, :]
+        return dispatch_recv_token_tensor_ref
+    
+    check_tensors = {
+        "rank_token_count": {
+            "ref": rank_token_count_ref,
+            "cur": rank_token_count,
+            "atol": 1e-5,
+            "rtol": 1e-5,
+            "ref_fn": lambda x: x,
+            "cur_fn": lambda x: x,
+        },
+        "num_tokens_per_local_expert_recv": {
+            "ref": num_tokens_per_local_expert_recv_ref,
+            "cur": num_tokens_per_local_expert_recv,
+            "atol": 1e-5,
+            "rtol": 1e-5,
+            "ref_fn": lambda x: x,
+            "cur_fn": lambda x: x >> 16, # right shift 16 as the dispatch recv task uses padded count
+        },
+        "dispatch_recv_token_tensor": {
+            "ref": dispatch_recv_token_tensor_ref,
+            "cur": dispatch_recv_token_tensor,
+            "atol": 1e-5,
+            "rtol": 1e-5,
+            "ref_fn": get_ref_dispatch_output,
+            "cur_fn": lambda x: x,
+        },
+    }
+
+    return intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream, check_tensors
 
 def compile_kernel(dist_param: ProcessGroupInfo):
 
-    intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
-
+    intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream, _ = reset_tensors(dist_param)
+    torch.cuda.synchronize()
+    
     intra_moe_kernel_compiled = cute.compile(
         intra_moe_kernel,
         kernel_param,
@@ -247,74 +319,47 @@ def compile_kernel(dist_param: ProcessGroupInfo):
     
     return intra_moe_kernel_compiled
 
-def test_loop(dist_param: ProcessGroupInfo, warm_up_iters=0, actual_iters=1):
+def test_dispatch(dist_param: ProcessGroupInfo, warm_up_iters=0, actual_iters=1):
+    
+    """
+    Correctness alignment:
+    """
+
 
     rank = dist_param.rank
     intra_moe_kernel_compiled = compile_kernel(dist_param)
-    
-    for warm_up in range(warm_up_iters):
-        intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
-        torch.cuda.synchronize()
 
-        intra_moe_kernel_compiled(
-            kernel_param,
-            profiler_buffer_cute,
-            profiler_ptr_cute,
-            current_stream,
-        )
-        
-        torch.cuda.synchronize()
-    
-    start_events = [torch.cuda.Event(enable_timing=True) for _ in range(actual_iters)]
-    end_events = [torch.cuda.Event(enable_timing=True) for _ in range(actual_iters)]
+    intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream, check_tensors = reset_tensors(dist_param)
+    torch.cuda.synchronize()
 
-    for run in range(actual_iters):
-        intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
-        torch.cuda.synchronize()
-
-        start_events[run].record()
-        intra_moe_kernel_compiled(
-            kernel_param,
-            profiler_buffer_cute,
-            profiler_ptr_cute,
-            current_stream,
-        )
-        end_events[run].record()
-        
-        torch.cuda.synchronize()
-        
-    measured_times = []
-    for iter_idx in range(actual_iters):
-        measured_times.append(start_events[iter_idx].elapsed_time(end_events[iter_idx]))
-
-    ms = np.median(measured_times)
-
-    print(f"rank-{rank} median time: {ms} ms")
-
-    profiler_file_name = f"results/mpk_intranode_moe_rank_{rank}.perfetto-trace"
-    export_to_perfetto_trace(
-        profiler_buffer,
-        profiler_file_name,
-        num_sm=intra_moe_kernel.num_workers,
-        num_warps=intra_moe_kernel.num_warp,
+    intra_moe_kernel_compiled(
+        kernel_param,
+        profiler_buffer_cute,
+        profiler_ptr_cute,
+        current_stream,
     )
     
-    ## check results here:
-
+    torch.cuda.synchronize()
+            
+    for tensor_name in check_tensors:
+        print(f"rank-{rank}, checking {tensor_name} ...")
+        ref_fn = check_tensors[tensor_name]["ref_fn"]
+        cur_fn = check_tensors[tensor_name]["cur_fn"]
+        ref = ref_fn(check_tensors[tensor_name]["ref"]).cpu()
+        cur = cur_fn(check_tensors[tensor_name]["cur"]).cpu()
+        torch.testing.assert_close(
+            cur,
+            ref,
+            atol=check_tensors[tensor_name]["atol"],
+            rtol=check_tensors[tensor_name]["rtol"],
+        )
+        print(f"rank-{rank}, {tensor_name} check passed.")
+        
+    print(f"rank-{rank}, all check passed.")
 
 if __name__ == "__main__":
     num_processes = 2
     parallel_launch(
         num_processes,
-        test_loop,
+        test_dispatch,
     )
-
-    '''
-    MoE:
-    Input (per rank):
-    input_token_tensor: [num_tokens, hidden_dim]
-    topk_scores: [num_token, num_experts] -> topk_weights: [num_token, num_activate_experts], topk_indices: [num_token, num_activate_experts]
-    
-    Output (per rank):
-    output_token_tensor: [num_token, hidden_dim]
-    '''

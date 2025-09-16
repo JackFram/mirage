@@ -6,7 +6,7 @@ from typing import Concatenate, ParamSpec, List, Optional, Tuple
 
 import torch
 from torch.multiprocessing import spawn  # pyright: ignore[reportPrivateImportUsage]
-from cuda_utils import checkCudaErrors
+from mpk_cute_dsl.cuda_utils import checkCudaErrors
 import cuda.bindings.runtime as cudart
 import torch.distributed as dist
 import ctypes
