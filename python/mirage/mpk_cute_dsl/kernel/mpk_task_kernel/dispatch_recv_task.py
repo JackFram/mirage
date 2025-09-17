@@ -53,11 +53,13 @@ class DispatchRecvTask:
         thread_idx, _, _ = cute.arch.thread_idx()
         
         self.profiler.profile_event(event_name="Dispatch-Recv", event_type="begin")
-        self.disptach_recv()
+        inline_ptx.fence_acquire_sys()
+        self.dispatch_recv()
+        inline_ptx.fence_release_gpu()
         self.profiler.profile_event(event_name="Dispatch-Recv", event_type="end")
 
     @cute.jit
-    def disptach_recv(self):
+    def dispatch_recv(self):
 
         thread_idx, _, _ = cute.arch.thread_idx()
         # Decode the task description
@@ -91,10 +93,10 @@ class DispatchRecvTask:
             count_tensor = self.get_count_buffer_ptr(local_buffer_ptr, local_rank, local_expert_idx)
             token_count = 0
             while(cutlass.dynamic_expr(token_count == 0)):
-                token_count = inline_ptx.ld_flag_sys_acquire_u32(count_tensor)
+                token_count = inline_ptx.ld_flag_acquire_sys_global_u32(count_tensor)
             token_count -= 1
             packed_count = (token_count << 16) | (0x00000001)
-            accumulated_packed_count = inline_ptx.atomic_add(
+            accumulated_packed_count = inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(
                 num_tokens_per_local_expert_recv[local_expert_idx, None],
                 packed_count,
             ) 
@@ -105,11 +107,11 @@ class DispatchRecvTask:
             if arrived_group_count == num_local_ranks:
                 tile_count = (local_expert_offset + token_count + token_tile_size - 1) // token_tile_size
                 packed_tile_count = (tile_count << 24) | (1 << 16)
-                inline_ptx.atomic_add(mpk_task_barrier[tile_count_sync_id, None], packed_tile_count)
+                inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(mpk_task_barrier[tile_count_sync_id, None], packed_tile_count)
             
             self.worker_sync_buffer[0] = token_count
             self.worker_sync_buffer[1] = local_expert_offset
-            self.worker_sync_buffer[2] = inline_ptx.atomic_add(
+            self.worker_sync_buffer[2] = inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(
                 rank_token_count,
                 token_count,
             )
@@ -143,7 +145,7 @@ class DispatchRecvTask:
 
             # add token gather task to the queue (one task per token)
             token_gather_desc = cutlass.Uint32((MPKTask.kTokenGather.value << cutlass.Uint32(28)) | (token_idx << cutlass.Uint32(12)) | cutlass.Uint32(last_tile_token_count))
-            task_write_idx = inline_ptx.atomic_add(
+            task_write_idx = inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(
                 mpk_task_produce_idx,
                 cutlass.Int32(1),
             ) % cutlass.Int32(mpk_queue_len)

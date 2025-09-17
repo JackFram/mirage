@@ -54,7 +54,9 @@ class TokenGatherTask:
     def execute(self):
         # Execute the combine receive task
         self.profiler.profile_event(event_name="Token-Gather-Task", event_type="begin")
+        inline_ptx.fence_acquire_gpu()
         self.token_gather()
+        inline_ptx.fence_release_gpu()
         self.profiler.profile_event(event_name="Token-Gather-Task", event_type="end")
 
     @cute.jit
@@ -122,7 +124,7 @@ class TokenGatherTask:
             # trigger ffn task based on tile-level token arrival
             token_tile_idx = dst_expert_offset // token_tile_size
             tile_group_sync_id = gemm_tile_bar_offset + dst_expert * token_tile_per_expert + token_tile_idx            
-            arrived_token_count = inline_ptx.atomic_add(mpk_task_barrier[tile_group_sync_id, None], 1) + 1
+            arrived_token_count = inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(mpk_task_barrier[tile_group_sync_id, None], 1) + 1
             self.worker_sync_buffer[4] = 0
             self.worker_sync_buffer[5] = token_tile_idx
             # normal tokens
@@ -143,11 +145,11 @@ class TokenGatherTask:
             # add fused ffn task to the queue
             for ffn_task_id in range(thread_idx, ffn_w13_task_num, 32 * num_worker_warps):
                 ffn_task_desc = cutlass.Uint32((MPKTask.kFusedFFNW13.value << cutlass.Uint32(28)) | (dst_expert << cutlass.Uint32(16)) | (token_tile_idx << cutlass.Uint32(8)) | cutlass.Uint32(ffn_task_id))
-                task_write_idx = inline_ptx.atomic_add(
+                task_write_idx = inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(
                     mpk_task_produce_idx,
                     cutlass.Int32(1),
                 ) % cutlass.Int32(mpk_queue_len)
-                inline_ptx.st_flag_release(mpk_task_queue[task_write_idx, None], ffn_task_desc)
+                inline_ptx.st_flag_relaxed_gpu_u32(mpk_task_queue[task_write_idx, None], ffn_task_desc)
 
     @cute.jit
     def make_global_tensor_from_buffer_ptr(

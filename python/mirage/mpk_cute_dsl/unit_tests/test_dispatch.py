@@ -256,13 +256,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     for i in range(num_local_experts * num_ranks):
         mpk_task_queue[task_idx][0] = (MPKTask.kDispatchRecv.value << 28) | i
         task_idx += 1
-    # for i in range(rank_token_count_ref[0].item()):
-    #     mpk_task_queue[task_idx][0] = (MPKTask.kTokenGather.value << 28) | (i << 12)
-    #     task_idx += 1
-    # # add termination task as we are testing dispatch only.
-    # for i in range(148):
-    #     mpk_task_queue[task_idx][0] = (MPKTask.kTerminate.value << 28)
-    #     task_idx += 1
     
     mpk_task_produce_idx[0] = task_idx
 

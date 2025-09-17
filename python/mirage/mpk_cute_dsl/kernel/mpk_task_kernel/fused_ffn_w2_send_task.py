@@ -538,7 +538,7 @@ class FusedFFNW2SendTask:
                 thr_src_vec = sC_send[thread_idx, None, epi_buffer]
                 token_idx = thread_idx // num_vec
                 # TODO(Zhihao): change here to ld.global.nc
-                packed_val = inline_ptx.ld_flag_sys_acquire_u32(combine_info_tensor[expert_idx, token_idx+subtile_idx*vec_stride, None])
+                packed_val = inline_ptx.ld_flag_acquire_sys_global_u32(combine_info_tensor[expert_idx, token_idx+subtile_idx*vec_stride, None])
                 valid_flag = packed_val >> 17 & cutlass.Uint32(0x00000001)
                 src_rank_idx = packed_val >> 13 & cutlass.Uint32(0x0000000F)
                 src_expert_idx = packed_val >> 8 & cutlass.Uint32(0x0000001F)

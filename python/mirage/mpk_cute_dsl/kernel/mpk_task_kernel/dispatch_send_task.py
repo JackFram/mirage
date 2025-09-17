@@ -51,6 +51,7 @@ class DispatchSendTask:
         # Execute the dispatch send task
         self.profiler.profile_event(event_name="Dispatch-Send", event_type="begin")
         self.dispatch_send()
+        inline_ptx.fence_release_sys()
         self.profiler.profile_event(event_name="Dispatch-Send", event_type="end")
 
     @cute.jit
@@ -82,7 +83,7 @@ class DispatchSendTask:
             
             # Get the synchronized index for sending tokens
             if (thread_idx == 0):
-                recv_index = inline_ptx.atomic_add(local_token_send_count_per_expert[expert_idx, None], 1)
+                recv_index = inline_ptx.atomic_add_flag_relaxed_gpu_global_u32(local_token_send_count_per_expert[expert_idx, None], 1)
                 self.send_index_buffer[0] = recv_index
             cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
             remote_index = self.send_index_buffer[0]
@@ -109,17 +110,15 @@ class DispatchSendTask:
                 meta_tensor[0] = cutlass.Int32(token_idx)  # token index
 
             thr_tiled_rank_recv_tensor = cute.zipped_divide(remote_tensor, thr_tile_shape)
-            
             thr_dst_vec = thr_tiled_rank_recv_tensor[(None, (0, thread_idx))]
-                
             thr_dst_vec.store(thr_src_vec.load())
 
             cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
             
             # update the completion signal to a global sync buffer
             if (thread_idx == 0):
-                # use release to flush the data to gmem before updating the flag
-                recv_index = inline_ptx.red_add_global_release_u32(local_token_send_bar_expert[expert_idx, None], 1)
+                # use release.sys to flush the data to gmem before updating the flag
+                recv_index = inline_ptx.red_add_relaxed_sys_global_u32(local_token_send_bar_expert[expert_idx, None], 1)
             
     @cute.jit
     def make_global_tensor_from_buffer_ptr(
