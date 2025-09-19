@@ -182,7 +182,7 @@ class FusedFFNW2SendTask:
         #
         # Setup smem tensor A/B/C
         #
-        # (EPI_TILE_M, EPI_TILE_N, STAGE) ((8,4),(64,1),(1,4))
+        # (EPI_TILE_M, EPI_TILE_N, STAGE)
         sC = self.smem_storage.sC.get_tensor(
             sC_layout, swizzle=c_smem_layout_staged.inner
         )

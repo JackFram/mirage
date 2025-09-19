@@ -208,7 +208,7 @@ class FusedFFNW13Task:
         gB_nkl = cute.local_tile(
             w13_mB_nkl, cute.slice_(mma_tiler, (0, None, None)), (None, None, None)
         )
-        # (bM, bN, RestM, RestN, RestL) # (64,64,2,40,16)
+        # (bM, bN, RestM, RestN, RestL)
         gC_mnl = cute.local_tile(
             w13_mC_mnl, cute.slice_((d_mma_tiler[0], d_mma_tiler[1] // 2, d_mma_tiler[2]), (None, None, 0)), (None, None, None)
         )
@@ -568,6 +568,7 @@ class FusedFFNW13Task:
                     barrier_id=epilog_sync_bar_id,
                     number_of_threads=epilog_threads,
                 )
+                
                 #
                 # store C to global memory with TMA
                 #

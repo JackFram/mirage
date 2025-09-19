@@ -259,7 +259,7 @@ class SM100MPKIntraMoEKernel:
         if self.moe_param.swapAB:
             # remove smem swizzle for C as we are using swapAB
             self.w13_c_smem_layout_staged = cute.make_composed_layout(
-                cute.make_swizzle(0, 3, 4), 0, self.w13_c_smem_layout_staged.outer
+                cute.make_swizzle(0, 3, 4), 0, cute.make_layout(((self.w13_d_tile[0].shape, 1), (self.w13_d_tile[1].shape, 1), (1, self.num_c_stage)), stride=((self.w13_d_tile[1].shape, 0), (1, 0), (0, self.w13_d_tile[1].shape * self.w13_d_tile[0].shape)))
             )
             # w2_layout_atom_outer = cute.make_layout((self.num_c_stage, 32, 128))
             self.w2_c_smem_layout_staged = cute.make_composed_layout(

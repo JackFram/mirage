@@ -97,6 +97,7 @@ We have 7 main tasks:
     - [ ] Add acq/rel pattern for data consistency
     - [ ] Correct shared memory layout for swapAB case (W13 task)
     - [ ] Optimize dispatch send/recv latency
+- [ ] Support for Ampere and Hopper
 - [ ] Low precision support (e.g., fp8)
 - [ ] Add MPK counter reset in the termination task
 - [ ] Support prefilling MoE 

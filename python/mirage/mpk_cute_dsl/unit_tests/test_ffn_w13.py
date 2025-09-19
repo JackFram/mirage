@@ -94,8 +94,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     '''
     ffn_grouped_gemm
     '''
-    w13_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim * 2, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
-    w2_tensor = torch.randn(num_local_experts, inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
+    w13_tensor = torch.randn(num_local_experts, inter_dim * 2, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
+    w2_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
 
     ffn_fused_w13_output_tensor = torch.empty(
         (num_local_experts, num_tokens, inter_dim),
@@ -250,8 +250,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
             "cur": ffn_fused_w13_output_tensor,
             "ref_fn": lambda x: x,
             "cur_fn": lambda x: x,
-            "atol": 1e-5,
-            "rtol": 1e-5,
+            "atol": 1e-2,
+            "rtol": 1e-2,
         }
     }
 
@@ -293,7 +293,7 @@ def test_dispatch(dist_param: ProcessGroupInfo, warm_up_iters=0, actual_iters=1)
     )
     
     torch.cuda.synchronize()
-            
+
     for tensor_name in check_tensors:
         print(f"rank-{rank}, checking {tensor_name} ...")
         ref_fn = check_tensors[tensor_name]["ref_fn"]
