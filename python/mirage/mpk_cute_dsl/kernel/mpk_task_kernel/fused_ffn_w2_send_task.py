@@ -491,7 +491,7 @@ class FusedFFNW2SendTask:
             #
             # Set tensor memory buffer for current tile
             acc_buf_idx = 0
-            # (T2R, T2R_M, T2R_N, EPI_M, EPI_M)
+            # (T2R, T2R_M, T2R_N, EPI_M, EPI_N)
             tTR_tAcc = tTR_tAcc_base[(None, None, None, None, None, acc_buf_idx)]
             
             #
@@ -519,9 +519,14 @@ class FusedFFNW2SendTask:
                 cute.copy(tiled_copy_t2r, tTR_tAcc_mn, tTR_rAcc)
                 epi_buffer = subtile_idx % num_c_stage
                 sC[None, thread_idx, epi_buffer].store(tTR_rAcc.load().to(c_dtype))
+                # barrier to make sure shared memory store is visible to remote store
+                cute.arch.barrier(
+                    barrier_id=epilog_sync_bar_id,
+                    number_of_threads=epilog_threads,
+                )
                 thr_src_vec = sC_send[thread_idx, None, epi_buffer]
-                token_idx = thread_idx // num_vec
-                packed_val = inline_ptx.ld_flag_acquire_sys_global_u32(combine_info_tensor[expert_idx, token_idx+subtile_idx*vec_stride+tile_idx*token_tile_size, None])
+                token_idx = thread_idx // num_vec + subtile_idx * vec_stride + tile_idx * token_tile_size
+                packed_val = inline_ptx.ld_flag_relaxed_gpu_u32(combine_info_tensor[expert_idx, token_idx, None])
                 valid_flag = packed_val >> 17 & cutlass.Uint32(0x00000001)
                 src_rank_idx = packed_val >> 13 & cutlass.Uint32(0x0000000F)
                 src_expert_idx = packed_val >> 8 & cutlass.Uint32(0x0000001F)
@@ -529,14 +534,14 @@ class FusedFFNW2SendTask:
 
                 if valid_flag == 1:
                     thr_dst_vec = self.get_combine_token_ptr_buffer(
-                        remote_buffer_ptr,
-                        src_rank_idx,
-                        src_expert_idx,
-                        src_token_idx,
-                        ffn_w2_task_id,
-                        thread_idx % num_vec,
-                        epilog_threads,
-                        vec_stride,
+                        buffer_ptr_tensor=remote_buffer_ptr,
+                        rank=src_rank_idx,
+                        expert_idx=src_expert_idx,
+                        recv_token_idx=src_token_idx,
+                        ffn_tile_idx=ffn_w2_task_id,
+                        vec_idx=thread_idx % num_vec,
+                        tile_stride=epilog_threads,
+                        vec_stride=vec_stride,
                     )
                     thr_dst_vec.store(thr_src_vec.load())
                 
@@ -712,7 +717,7 @@ class FusedFFNW2SendTask:
         combine_token_stride = self.const_param.combine_token_stride
 
         ptr_offset = token_buffer_offset_in_bytes
-        ptr_offset += (expert_idx * num_tokens_per_rank + recv_token_idx) * combine_token_stride + ffn_tile_idx * tile_stride + vec_idx * vec_stride
+        ptr_offset += (expert_idx * num_tokens_per_rank + recv_token_idx) * combine_token_stride + (ffn_tile_idx * tile_stride + vec_idx * vec_stride) * (moe_out_dtype.width // 8)
 
         return self.make_global_tensor_from_buffer_ptr(
                 dtype=moe_out_dtype,

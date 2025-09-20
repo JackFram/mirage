@@ -81,6 +81,7 @@ class CombineRecvTask:
             count = inline_ptx.ld_flag_relaxed_sys_u32(local_count_tensor)
             while(cutlass.dynamic_expr(count != num_topk * ffn_w2_task_num)):
                 count = inline_ptx.ld_flag_relaxed_sys_u32(local_count_tensor)
+            inline_ptx.fence_acquire_sys()
         cute.arch.barrier(barrier_id=worker_sync_bar_id, number_of_threads=num_worker_warps * 32)
         # reduction over received token 
         thr_tiled_output_tensor = cute.zipped_divide(output_tensor, thr_tile_shape)
@@ -103,6 +104,9 @@ class CombineRecvTask:
         thr_src_vec = tiled_token_tensor[(None, (0, thread_idx))]
         weight = rank_input_topk_weights[token_id, 0]
         acc_vec = thr_src_vec.load() * weight
+        
+        # if thread_idx == 0 and token_id == 60 and self.const_param.local_rank == 0:
+        #     cute.printf(token_tensor[2298], weight)
 
         # remaining items
         for idx in cutlass.range_constexpr(1, num_topk, 1):
@@ -122,6 +126,9 @@ class CombineRecvTask:
             thr_src_vec = tiled_token_tensor[(None, (0, thread_idx))]
             weight = rank_input_topk_weights[token_id, idx]
             acc_vec += thr_src_vec.load() * weight
+            
+            # if thread_idx == 0 and token_id == 60 and self.const_param.local_rank == 0:
+            #     cute.printf(token_tensor[2298], weight)
 
         thr_dst_vec.store(acc_vec.to(moe_out_dtype))
 

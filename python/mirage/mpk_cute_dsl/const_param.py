@@ -5,6 +5,7 @@ import math
 from typing import Optional, Type, Union
 from cutlass.cute.nvgpu import tcgen05
 import cutlass.utils as utils
+from cutlass.torch import dtype as torch_dtype
 
 class ConstParam:
     def __init__(
