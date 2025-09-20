@@ -238,11 +238,11 @@ def reset_tensors(dist_param: ProcessGroupInfo):
             dst_rank_idx = expert_idx // num_local_experts
             src_expert_idx = expert_idx % num_local_experts
             src_index_idx = token_idx % num_tokens_per_rank
-            # if src_rank_idx == dist_param.rank:
-            #     output_tensor_ref[src_index_idx] += gathered_ffn_w2_output_ref[expert_idx, src_index_idx] * topk_weights_ref[src_index_idx, topk_idx]
             if dst_rank_idx == dist_param.rank:
                 combine_info_tensor[src_expert_idx, global_token_count[dst_rank_idx, src_expert_idx], 0] = (1 << 17) | (src_rank_idx << 13) | (src_expert_idx << 8) | src_index_idx
             if src_rank_idx == dist_param.rank:
+                # if src_index_idx == 60 and dist_param.rank == 0:
+                #     print(gathered_ffn_w2_output_ref[expert_idx, global_token_count[dst_rank_idx, src_expert_idx]][2298], topk_weights_ref[src_index_idx, topk_idx])
                 output_tensor_ref[src_index_idx] += gathered_ffn_w2_output_ref[expert_idx, global_token_count[dst_rank_idx, src_expert_idx]] * topk_weights_ref[src_index_idx, topk_idx]
             global_token_count[dst_rank_idx, src_expert_idx] += 1
 
