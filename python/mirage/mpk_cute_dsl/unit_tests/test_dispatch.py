@@ -104,10 +104,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     '''
     combine
     '''
-    ffn_fused_w2_output_tensor = torch.randn(
-        (num_local_experts, num_tokens, hidden_dim),
-        dtype=torch_dtype(moe_param.out_dtype),
-    ).fill_(0).cuda().permute(permute_order)
     
     combine_info_tensor = torch.empty(
         (num_local_experts, num_tokens, 1), # (activated-1b, source_rank-4b, source_expert-5b, source_index-8b)
@@ -127,7 +123,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     num_tokens_per_local_expert_recv_cute = from_dlpack(num_tokens_per_local_expert_recv, assumed_align=16)
     dispatch_recv_token_tensor_cute = from_dlpack(dispatch_recv_token_tensor, assumed_align=16)
     ffn_fused_w13_output_tensor_cute = from_dlpack(ffn_fused_w13_output_tensor, assumed_align=16)
-    ffn_fused_w2_output_tensor_cute = from_dlpack(ffn_fused_w2_output_tensor, assumed_align=16)
     combine_info_tensor_cute = from_dlpack(combine_info_tensor, assumed_align=16)
     output_tensor_cute = from_dlpack(output_tensor, assumed_align=16)
     local_token_send_count_per_expert_cute = from_dlpack(local_token_send_count_per_expert, assumed_align=16)
@@ -198,7 +193,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
             rank_token_count=rank_token_count_cute,
             dispatch_recv_token_tensor=dispatch_recv_token_tensor_cute,
             ffn_fused_w13_output_tensor=ffn_fused_w13_output_tensor_cute,
-            ffn_fused_w2_output_tensor=ffn_fused_w2_output_tensor_cute,
             combine_info_tensor=combine_info_tensor_cute,
             output_tensor=output_tensor_cute,
             local_buffer_ptr=local_buffer_ptr_cute,

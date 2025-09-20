@@ -86,7 +86,7 @@ def parallel_launch(
             world_size,
             world_size,
             0,
-            "tcp://localhost:29500",
+            "tcp://localhost:29501",
             worker,
         )
         + args,

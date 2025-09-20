@@ -53,13 +53,10 @@ class FusedFFNW2SendTask:
     def execute(
         self,
         tiled_mma: cute.TiledMma,
-        w2_d_tiled_mma: cute.TiledMma,
         w2_tma_atom_a: cute.CopyAtom,
         w2_tma_atom_b: cute.CopyAtom,
-        w2_tma_atom_c: Optional[cute.CopyAtom],
         w2_mA_mkl: cute.Tensor,
         w2_mB_nkl: cute.Tensor,
-        w2_mC_mnl: cute.Tensor,
         cluster_layout_vmnk: cute.Layout,
         a_smem_layout_staged: cute.ComposedLayout,
         b_smem_layout_staged: cute.ComposedLayout,
@@ -71,13 +68,10 @@ class FusedFFNW2SendTask:
         self.profiler.profile_event(event_name="Fused-FFN-W2-Send", event_type="begin")
         self.fused_ffn_w2(
             tiled_mma=tiled_mma,
-            w2_d_tiled_mma=w2_d_tiled_mma,
             w2_tma_atom_a=w2_tma_atom_a,
             w2_tma_atom_b=w2_tma_atom_b,
-            w2_tma_atom_c=w2_tma_atom_c,
             w2_mA_mkl=w2_mA_mkl,
             w2_mB_nkl=w2_mB_nkl,
-            w2_mC_mnl=w2_mC_mnl,
             cluster_layout_vmnk=cluster_layout_vmnk,
             a_smem_layout_staged=a_smem_layout_staged,
             b_smem_layout_staged=b_smem_layout_staged,
@@ -91,13 +85,10 @@ class FusedFFNW2SendTask:
     def fused_ffn_w2(        
         self,
         tiled_mma: cute.TiledMma,
-        w2_d_tiled_mma: cute.TiledMma,
         w2_tma_atom_a: cute.CopyAtom,
         w2_tma_atom_b: cute.CopyAtom,
-        w2_tma_atom_c: Optional[cute.CopyAtom],
         w2_mA_mkl: cute.Tensor,
         w2_mB_nkl: cute.Tensor,
-        w2_mC_mnl: cute.Tensor,
         cluster_layout_vmnk: cute.Layout,
         a_smem_layout_staged: cute.ComposedLayout,
         b_smem_layout_staged: cute.ComposedLayout,
@@ -129,6 +120,7 @@ class FusedFFNW2SendTask:
         acc_dtype = self.const_param.acc_dtype
         cta_group = self.const_param.cta_group
         num_tmem_alloc_cols = self.const_param.num_tmem_alloc_cols
+        token_tile_size = self.const_param.token_tile_size
         
         combine_info_tensor = self.kernel_param.combine_info_tensor
         remote_buffer_ptr = self.kernel_param.remote_buffer_ptr
@@ -177,14 +169,13 @@ class FusedFFNW2SendTask:
                         acc_empty_mbar_ptr + acc_stage, 4
                     )
         cute.arch.mbarrier_init_fence()
-        sC_layout = cute.make_layout((w2_d_tile[0].shape, d_mma_tiler[1], num_c_stage), stride=(d_mma_tiler[1], 1, d_mma_tiler[1] * w2_d_tile[0].shape))
         sC_send_layout = cute.make_layout((d_mma_tiler[1], w2_d_tile[0].shape, num_c_stage), stride=(w2_d_tile[0].shape, 1, d_mma_tiler[1] * w2_d_tile[0].shape))
         #
         # Setup smem tensor A/B/C
         #
         # (EPI_TILE_M, EPI_TILE_N, STAGE)
         sC = self.smem_storage.sC.get_tensor(
-            sC_layout, swizzle=c_smem_layout_staged.inner
+            c_smem_layout_staged.outer, swizzle=c_smem_layout_staged.inner
         )
         sC_send = self.smem_storage.sC.get_tensor(
             sC_send_layout, swizzle=c_smem_layout_staged.inner
@@ -209,22 +200,15 @@ class FusedFFNW2SendTask:
         gB_nkl = cute.local_tile(
             w2_mB_nkl, cute.slice_(mma_tiler, (0, None, None)), (None, None, None)
         )
-        # (bM, bN, RestM, RestN, RestL) # (64,64,2,40,16)
-        gC_mnl = cute.local_tile(
-            w2_mC_mnl, cute.slice_((d_mma_tiler[0], d_mma_tiler[1] // 2, d_mma_tiler[2]), (None, None, 0)), (None, None, None)
-        )
         
         #
         # Partition global tensor for TiledMMA_A/B/C
         #
         thr_mma = tiled_mma.get_slice(mma_tile_coord_v)
-        d_thr_mma = w2_d_tiled_mma.get_slice(mma_tile_coord_v)
         # (MMA, MMA_M, MMA_K, RestM, RestK, RestL)
         tCgA = thr_mma.partition_A(gA_mkl)
         # (MMA, MMA_N, MMA_K, RestN, RestK, RestL)
         tCgB = thr_mma.partition_B(gB_nkl)
-        # (MMA, MMA_M, MMA_N, RestM, RestN, RestL), ((64,64),1,1,2,40,16)
-        tCgC = d_thr_mma.partition_C(gC_mnl)
 
         #
         # Partition global/shared tensor for load A, B with TMA
@@ -496,10 +480,10 @@ class FusedFFNW2SendTask:
             #
             (
                 tiled_copy_t2r,
-                tTR_tAcc_base, # (((32,32),1),1,1,1,2,1)
-                tTR_rAcc, # ((32,1),1,1)
+                tTR_tAcc_base, 
+                tTR_rAcc,
             ) = self.epilog_tmem_copy_and_partition(
-                epi_tidx, tCtAcc_base, tCgC, epi_tile, False
+                epi_tidx, tCtAcc_base, epi_tile, False
             )
             
             #
@@ -537,12 +521,12 @@ class FusedFFNW2SendTask:
                 sC[None, thread_idx, epi_buffer].store(tTR_rAcc.load().to(c_dtype))
                 thr_src_vec = sC_send[thread_idx, None, epi_buffer]
                 token_idx = thread_idx // num_vec
-                # TODO(Zhihao): change here to ld.global.nc
-                packed_val = inline_ptx.ld_flag_acquire_sys_global_u32(combine_info_tensor[expert_idx, token_idx+subtile_idx*vec_stride, None])
+                packed_val = inline_ptx.ld_flag_acquire_sys_global_u32(combine_info_tensor[expert_idx, token_idx+subtile_idx*vec_stride+tile_idx*token_tile_size, None])
                 valid_flag = packed_val >> 17 & cutlass.Uint32(0x00000001)
                 src_rank_idx = packed_val >> 13 & cutlass.Uint32(0x0000000F)
                 src_expert_idx = packed_val >> 8 & cutlass.Uint32(0x0000001F)
                 src_token_idx = packed_val & cutlass.Uint32(0x000000FF)
+
                 if valid_flag == 1:
                     thr_dst_vec = self.get_combine_token_ptr_buffer(
                         remote_buffer_ptr,
@@ -610,12 +594,10 @@ class FusedFFNW2SendTask:
                     (((ffn_w2_k_cnt - 1) // num_ab_stage) % 2),
                 )
 
-
     def epilog_tmem_copy_and_partition(
         self,
         tidx: cutlass.Int32,
         tAcc: cute.Tensor,
-        gC_mnl: cute.Tensor,
         epi_tile: cute.Tile,
         use_2cta_instrs: Union[cutlass.Boolean, bool],
     ) -> tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]:
@@ -665,61 +647,15 @@ class FusedFFNW2SendTask:
         )
 
         thr_copy_t2r = tiled_copy_t2r.get_slice(tidx)
-        # (T2R, T2R_M, T2R_N, EPI_M, EPI_M, STAGE)
+        # (T2R, T2R_M, T2R_N, EPI_M, EPI_N, STAGE)
         tTR_tAcc = thr_copy_t2r.partition_S(tAcc_epi)
-
-        # (EPI_TILE_M, EPI_TILE_N, EPI_M, EPI_N, RestM, RestN, RestL)
-        gC_mnl_epi = cute.flat_divide(
-            gC_mnl[((None, None), 0, 0, None, None, None)], epi_tile
-        )
         # (T2R, T2R_M, T2R_N, EPI_M, EPI_N, RestM, RestN, RestL)
-        tTR_gC = thr_copy_t2r.partition_D(gC_mnl_epi)
+        tTR_epi_C = thr_copy_t2r.partition_D(tAcc_epi)
         # (T2R, T2R_M, T2R_N)
         tTR_rAcc = cute.make_fragment(
-            tTR_gC[(None, None, None, 0, 0, 0, 0, 0)].shape, acc_dtype
+            tTR_epi_C[(None, None, None, 0, 0, 0)].shape, acc_dtype
         )
         return tiled_copy_t2r, tTR_tAcc, tTR_rAcc
-    
-    def epilog_gmem_copy_and_partition(
-        self,
-        tma_atom_c: cute.CopyAtom,
-        gC_mnl: cute.Tensor,
-        epi_tile: cute.Tile,
-        sC: cute.Tensor,
-    ) -> tuple[cute.CopyAtom, cute.Tensor, cute.Tensor]:
-        """Make tiledCopy for global memory store, then use it to partition
-        shared memory (source) and global memory (destination) for TMA store version.
-
-        :param tma_atom_c: The TMA copy atom configured for storing tensor C.
-        :type tma_atom_c: cute.CopyAtom
-        :param gC_mnl: The global memory tensor C.
-        :type gC_mnl: cute.Tensor
-        :param epi_tile: The epilogue tiler defining the granularity of the operation.
-        :type epi_tile: cute.Tile
-        :param sC: The shared memory epilogue buffer tensor.
-        :type sC: cute.Tensor
-        :return: A tuple containing:
-                 - tma_atom_c: The input TMA copy atom (passed through).
-                 - bSG_sC: The source shared memory tensor partitioned for the TMA operation.
-                 - tCgC: The destination global memory tensor partitioned for the TMA operation.
-        :rtype: tuple[cute.CopyAtom, cute.Tensor, cute.Tensor]
-        """
-        # (EPI_TILE_M, EPI_TILE_N, EPI_M, EPI_N, RestM, RestN, RestL)
-        gC_epi = cute.flat_divide(
-            gC_mnl[((None, None), 0, 0, None, None, None)], epi_tile
-        )
-        sC_for_tma_partition = cute.group_modes(sC, 0, 2)
-        gC_for_tma_partition = cute.group_modes(gC_epi, 0, 2)
-        # ((ATOM_V, REST_V), EPI_M, EPI_N)
-        # ((ATOM_V, REST_V), EPI_M, EPI_N, RestM, RestN, RestL)
-        bSG_sC, bSG_gC = cpasync.tma_partition(
-            tma_atom_c,
-            0,
-            cute.make_layout(1),
-            sC_for_tma_partition,
-            gC_for_tma_partition,
-        )
-        return tma_atom_c, bSG_sC, bSG_gC
     
     @cute.jit
     def make_global_tensor_from_buffer_ptr(

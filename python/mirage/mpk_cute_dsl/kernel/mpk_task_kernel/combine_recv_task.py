@@ -66,7 +66,7 @@ class CombineRecvTask:
         
         count_buffer_ptr = self.kernel_param.count_buffer_ptr
         local_buffer_ptr = self.kernel_param.local_buffer_ptr
-        new_rank_input_topk_weights = self.kernel_param.rank_input_topk_weights
+        rank_input_topk_weights = self.kernel_param.rank_input_topk_weights
         output_tensor = self.kernel_param.output_tensor
         rank_input_topk_indices = self.kernel_param.rank_input_topk_indices
 
@@ -101,7 +101,7 @@ class CombineRecvTask:
 
         tiled_token_tensor = cute.zipped_divide(token_tensor, thr_tile_shape)
         thr_src_vec = tiled_token_tensor[(None, (0, thread_idx))]
-        weight = new_rank_input_topk_weights[token_id, 0]
+        weight = rank_input_topk_weights[token_id, 0]
         acc_vec = thr_src_vec.load() * weight
 
         # remaining items
@@ -120,7 +120,7 @@ class CombineRecvTask:
 
             tiled_token_tensor = cute.zipped_divide(token_tensor, thr_tile_shape)
             thr_src_vec = tiled_token_tensor[(None, (0, thread_idx))]
-            weight = new_rank_input_topk_weights[token_id, idx]
+            weight = rank_input_topk_weights[token_id, idx]
             acc_vec += thr_src_vec.load() * weight
 
         thr_dst_vec.store(acc_vec.to(moe_out_dtype))

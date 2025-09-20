@@ -24,7 +24,6 @@ class MoEKernelParam:
             rank_token_count: cute.Tensor,
             dispatch_recv_token_tensor: cute.Tensor,
             ffn_fused_w13_output_tensor: cute.Tensor,
-            ffn_fused_w2_output_tensor: cute.Tensor,
             combine_info_tensor: cute.Tensor,
             output_tensor: cute.Tensor,
             # buffer ptr
@@ -55,7 +54,6 @@ class MoEKernelParam:
         self.rank_token_count = rank_token_count
         self.dispatch_recv_token_tensor = dispatch_recv_token_tensor
         self.ffn_fused_w13_output_tensor = ffn_fused_w13_output_tensor
-        self.ffn_fused_w2_output_tensor = ffn_fused_w2_output_tensor
         self.combine_info_tensor = combine_info_tensor
         self.output_tensor = output_tensor
         self.local_buffer_ptr = local_buffer_ptr
@@ -85,7 +83,6 @@ class MoEKernelParam:
         pointers.extend(get_c_pointers(self.rank_token_count))
         pointers.extend(get_c_pointers(self.dispatch_recv_token_tensor))
         pointers.extend(get_c_pointers(self.ffn_fused_w13_output_tensor))
-        pointers.extend(get_c_pointers(self.ffn_fused_w2_output_tensor))
         pointers.extend(get_c_pointers(self.combine_info_tensor))
         pointers.extend(get_c_pointers(self.output_tensor))
         pointers.extend(get_c_pointers(self.local_buffer_ptr))
@@ -116,7 +113,6 @@ class MoEKernelParam:
         values.extend(extract_mlir_values(self.rank_token_count))
         values.extend(extract_mlir_values(self.dispatch_recv_token_tensor))
         values.extend(extract_mlir_values(self.ffn_fused_w13_output_tensor))
-        values.extend(extract_mlir_values(self.ffn_fused_w2_output_tensor))
         values.extend(extract_mlir_values(self.combine_info_tensor))
         values.extend(extract_mlir_values(self.output_tensor))
         values.extend(extract_mlir_values(self.local_buffer_ptr))
@@ -147,7 +143,6 @@ class MoEKernelParam:
         values.extend(get_mlir_types(self.rank_token_count))
         values.extend(get_mlir_types(self.dispatch_recv_token_tensor))
         values.extend(get_mlir_types(self.ffn_fused_w13_output_tensor))
-        values.extend(get_mlir_types(self.ffn_fused_w2_output_tensor))
         values.extend(get_mlir_types(self.combine_info_tensor))
         values.extend(get_mlir_types(self.output_tensor))
         values.extend(get_mlir_types(self.local_buffer_ptr))
@@ -166,7 +161,7 @@ class MoEKernelParam:
         return values
 
     def __new_from_mlir_values__(self, values: list[ir.Value]) -> "MoEKernelParam":
-        assert len(values) == 27
+        assert len(values) == 26
         value_idx = 0
         new_w13_tensor = new_from_mlir_values(
             self.w13_tensor, [values[value_idx]]
@@ -210,10 +205,6 @@ class MoEKernelParam:
         value_idx += 1
         new_ffn_fused_w13_output_tensor = new_from_mlir_values(
             self.ffn_fused_w13_output_tensor, [values[value_idx]]
-        )
-        value_idx += 1
-        new_ffn_fused_w2_output_tensor = new_from_mlir_values(
-            self.ffn_fused_w2_output_tensor, [values[value_idx]]
         )
         value_idx += 1
         new_combine_info_tensor = new_from_mlir_values(
@@ -287,7 +278,6 @@ class MoEKernelParam:
             new_rank_token_count,
             new_dispatch_recv_token_tensor,
             new_ffn_fused_w13_output_tensor,
-            new_ffn_fused_w2_output_tensor,
             new_combine_info_tensor,
             new_output_tensor,
             new_local_buffer_ptr,
