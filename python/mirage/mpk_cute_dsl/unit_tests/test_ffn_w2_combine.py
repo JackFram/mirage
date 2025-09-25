@@ -22,7 +22,6 @@ from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
 def reset_tensors(dist_param: ProcessGroupInfo):
     torch.cuda.empty_cache()
-        
     '''
     Initialize per rank input tensors
     '''

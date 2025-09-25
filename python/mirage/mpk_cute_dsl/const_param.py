@@ -103,6 +103,8 @@ class ConstParam:
         self.num_c_stage = num_c_stage
         self.num_acc_stage = num_acc_stage
 
+        print(self.num_ab_stage, self.num_c_stage, self.num_acc_stage)
+
         # Set barrier id for cta sync, epilog sync, tmem ptr sync and tensormap update sync
         self.cta_sync_bar_id = 2
         self.epilog_sync_bar_id = 3
