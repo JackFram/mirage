@@ -8,7 +8,7 @@ version = "0.0.1"
 
 dependencies = [
     nvidia-cutlass-dsl,
-    tg4perfetto==0.04,
+    tg4perfetto==0.0.4,
 ]
 
 [tool.setuptools.packages.find]
