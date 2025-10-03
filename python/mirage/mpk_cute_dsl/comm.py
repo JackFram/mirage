@@ -248,8 +248,8 @@ def create_shared_all_to_all_buffer(
 
     if group is None:
         group = dist.group.WORLD
-        world_size = dist.get_world_size(group=group)
-        rank = dist.get_rank(group=group)
+    world_size = dist.get_world_size(group=group)
+    rank = dist.get_rank(group=group)
     
     # Allocate local buffer and get IPC handle
     for i in range(dist.get_world_size(group=group)):
@@ -264,12 +264,18 @@ def create_shared_all_to_all_buffer(
         local_tensor_list.append(input_tensor)
         local_ptr_list.append(pointer.value)
 
-    gathered_tensors = [torch.empty_like(local_tensor_list[0]) for _ in range(world_size)]
-    dist.all_to_all(gathered_tensors, local_tensor_list, group=group)
+    # Use all_to_all_single to avoid NCCL hang with list-based all_to_all
+    handle_size = local_tensor_list[0].numel()
+    input_flat = torch.stack(local_tensor_list, dim=0).reshape(-1).contiguous()
+    output_flat = torch.empty_like(input_flat)
+    # Send chunk i (handle destined for rank i) to rank i, receive from each rank j their chunk j
+    dist.all_to_all_single(output_flat, input_flat, group=group)
+    gathered_2d = output_flat.view(world_size, handle_size)
 
     handles = []
     handle_type = type(handle)
-    for tensor in gathered_tensors:
+    for i in range(world_size):
+        tensor = gathered_2d[i]
         bytes_data = tensor.cpu().numpy().tobytes()
         handle_obj = handle_type()
         ctypes.memmove(ctypes.addressof(handle_obj), bytes_data, len(bytes_data))
