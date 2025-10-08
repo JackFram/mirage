@@ -103,7 +103,7 @@ def ld_flag_acquire_sys_global_u32(sync_tensor: cute.Tensor, *, loc=None, ip=Non
     )
 
 @dsl_user_op
-def st_flag_release(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None, ip=None) -> None:
+def st_flag_release_sys_global_u32(sync_tensor: cute.Tensor, flag: Uint32, *, loc=None, ip=None) -> None:
     flag_addr_ptr_i64 = sync_tensor.iterator.toint(loc=loc, ip=ip).ir_value()
     llvm.inline_asm(
         None,

@@ -12,13 +12,12 @@ from cutlass.torch import dtype as torch_dtype
 
 import mpk_cute_dsl.comm as comm
 
-from moe_utils import MoEParam
-from dist_utils import ProcessGroupInfo, parallel_launch
-from kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
-from profiler.dsl_profiler import export_to_perfetto_trace
+from mpk_cute_dsl.moe_utils import MoEParam
+from mpk_cute_dsl.dist_utils import ProcessGroupInfo, parallel_launch
+from mpk_cute_dsl.kernel.sm100_mpk_intra_moe import SM100MPKIntraMoEKernel
+from mpk_cute_dsl.profiler.dsl_profiler import export_to_perfetto_trace
 from mpk_cute_dsl.param import MoEKernelParam
-
-from mpk_cute_dsl.testing import bench_gpu_time
+from mpk_cute_dsl.kernel.mpk_task_kernel.mpk_task import MPKTask
 
 def reset_tensors(dist_param: ProcessGroupInfo):
     torch.cuda.empty_cache()
@@ -29,7 +28,7 @@ def reset_tensors(dist_param: ProcessGroupInfo):
 
     num_ranks = dist_param.world_size
 
-    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 2560, 8, (32 // num_ranks) * num_ranks
+    num_tokens_per_rank, hidden_dim, inter_dim, num_topk, num_experts = 64, 5120, 2560, 8, 32
 
     assert num_experts % num_ranks == 0, f"num_experts {num_experts} should be divisible by num_ranks {num_ranks}"
     num_local_experts = num_experts // num_ranks
@@ -50,8 +49,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     gate_scores = torch.randn((num_tokens_per_rank, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_indices = torch.topk(gate_scores, num_topk, dim=-1, largest=True, sorted=False)[1].to(torch.int32)
     topk_weights = torch.randn((num_tokens_per_rank, num_topk), dtype=torch.float32, device='cuda')
-    
-    # Meta Info tensors    
+
+    # Meta Info tensors
     local_token_send_count_per_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     local_token_send_bar_expert = torch.zeros((num_experts, 1), dtype=torch.int32, device='cuda')
     rank_token_count = torch.zeros((1), dtype=torch.int32, device='cuda')
@@ -69,19 +68,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     mpk_task_consume_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_produce_idx = torch.zeros((1), dtype=torch.int32, device='cuda')
     mpk_task_barrier = torch.zeros((1024, 1), dtype=torch.int32, device='cuda')
-    
-    # MPK task initialization
-    task_idx = 0
-    mpk_task_queue[task_idx][0] = 0x10000000 # HistAll2All
-    task_idx += 1
-    for i in range(num_tokens_per_rank):
-        mpk_task_queue[task_idx][0] = (0x20000000 | i) # Dispatch-Send
-        task_idx += 1
-    for i in range(num_local_experts * num_ranks):
-        mpk_task_queue[task_idx][0] = (0x30000000 | i) # Dispatch-Recv
-        task_idx += 1
-    
-    mpk_task_produce_idx[0] = task_idx
 
     # Profiler tensor
     profiler_buffer_size = 148 * 9 * 128
@@ -91,11 +77,6 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     '''
     dispatch
     '''
-    num_tokens_per_local_expert_recv = torch.empty(
-        (num_local_experts, 1),
-        dtype=torch.int32,
-    ).fill_(0).cuda()
-
     # permute for group gemm
     permute_order = (1, 2, 0)
 
@@ -103,6 +84,11 @@ def reset_tensors(dist_param: ProcessGroupInfo):
         (num_local_experts, num_tokens, hidden_dim),
         dtype=torch_dtype(moe_param.in_dtype),
     ).fill_(0).cuda().permute(permute_order) # also the input for the ffn fused w13 task
+    
+    num_tokens_per_local_expert_recv = torch.empty(
+        (num_local_experts, 1),
+        dtype=torch.int32,
+    ).fill_(0).cuda()
 
     '''
     ffn_grouped_gemm
@@ -223,14 +209,25 @@ def reset_tensors(dist_param: ProcessGroupInfo):
             mpk_task_produce_idx=mpk_task_produce_idx_cute,
             mpk_task_barrier=mpk_task_barrier_cute,
         )
-    torch.cuda.synchronize()
     
+    # MPK task initialization
+    task_idx = 0
+    mpk_task_queue[task_idx][0] = (MPKTask.kHistAll2All.value << 28)
+    task_idx += 1
+    for i in range(num_tokens_per_rank):
+        mpk_task_queue[task_idx][0] = (MPKTask.kDispatchSend.value << 28) | i
+        task_idx += 1
+    for i in range(num_local_experts * num_ranks):
+        mpk_task_queue[task_idx][0] = (MPKTask.kDispatchRecv.value << 28) | i
+        task_idx += 1
+    
+    mpk_task_produce_idx[0] = task_idx
     return intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream
 
 def compile_kernel(dist_param: ProcessGroupInfo):
 
     intra_moe_kernel, kernel_param, profiler_buffer_cute, profiler_ptr_cute, profiler_buffer, current_stream = reset_tensors(dist_param)
-
+    torch.cuda.synchronize()
     intra_moe_kernel_compiled = cute.compile(
         intra_moe_kernel,
         kernel_param,
@@ -292,8 +289,6 @@ def test_loop(dist_param: ProcessGroupInfo, warm_up_iters=0, actual_iters=1):
         num_sm=intra_moe_kernel.num_workers,
         num_warps=intra_moe_kernel.num_warp,
     )
-    
-    ## check results here:
 
 
 if __name__ == "__main__":

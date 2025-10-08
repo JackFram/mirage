@@ -93,8 +93,8 @@ def reset_tensors(dist_param: ProcessGroupInfo):
     '''
     ffn_grouped_gemm
     '''
-    w13_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim * 2, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
-    w2_tensor = torch.randn(num_local_experts, inter_dim, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
+    w13_tensor = torch.randn(num_local_experts, inter_dim * 2, hidden_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
+    w2_tensor = torch.randn(num_local_experts, hidden_dim, inter_dim, dtype=torch_dtype(moe_param.out_dtype), device="cuda").permute(permute_order)
 
     ffn_fused_w13_output_tensor = torch.empty(
         (num_local_experts, num_tokens, inter_dim),

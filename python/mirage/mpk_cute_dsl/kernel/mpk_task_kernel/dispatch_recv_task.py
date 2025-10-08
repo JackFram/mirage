@@ -137,7 +137,7 @@ class DispatchRecvTask:
             src_offset[token_idx] = expert_start + group_token_idx # relative token index in the local expert
             src_rank[token_idx] = local_rank # relative rank index in the local world
             src_token[token_idx] = group_token_idx # relative token index in the local group ([local_rank, local_expert_idx])
-            src_index[token_idx] = meta_tensor[0] # original token index in the input sequence
+            src_index[token_idx] = inline_ptx.ld_flag_acquire_sys_global_u32(meta_tensor) # original token index in the input sequence
 
             last_tile_token_count = 0
             if arrived_group_count == num_local_ranks and group_token_idx == token_count - 1:

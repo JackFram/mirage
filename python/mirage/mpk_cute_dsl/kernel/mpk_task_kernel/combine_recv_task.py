@@ -126,9 +126,6 @@ class CombineRecvTask:
             thr_src_vec = tiled_token_tensor[(None, (0, thread_idx))]
             weight = rank_input_topk_weights[token_id, idx]
             acc_vec += thr_src_vec.load() * weight
-            
-            # if thread_idx == 0 and token_id == 60 and self.const_param.local_rank == 0:
-            #     cute.printf(token_tensor[2298], weight)
 
         thr_dst_vec.store(acc_vec.to(moe_out_dtype))
 

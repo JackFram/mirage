@@ -107,7 +107,7 @@ class DispatchSendTask:
 
             if (thread_idx == 0):
                 # Store the meta data
-                meta_tensor[0] = cutlass.Int32(token_idx)  # token index
+                inline_ptx.st_flag_release_sys_global_u32(meta_tensor, token_idx)  # token index
 
             thr_tiled_rank_recv_tensor = cute.zipped_divide(remote_tensor, thr_tile_shape)
             thr_dst_vec = thr_tiled_rank_recv_tensor[(None, (0, thread_idx))]

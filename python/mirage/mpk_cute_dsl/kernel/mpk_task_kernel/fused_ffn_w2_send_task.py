@@ -563,11 +563,11 @@ class FusedFFNW2SendTask:
                         cutlass.Uint32(1),
                     )
                     
-                    # if ret_count + 1 == 1024 * 40:
-                    #     cute.printf("arrived!")
-                        
-                    # if ret_count + 1 > 1024 * 40:
-                    #     cute.printf("overflow!")
+                    # if ret_count + 1 == 8 * 40:
+                    #     cute.printf("src_rank: {}, src_token_idx: {}, arrived!", src_rank_idx, src_token_idx)
+                    
+                    # if ret_count + 1 > 8 * 40:
+                    #     cute.printf("src_rank: {}, src_token_idx: {}, overflow!", src_rank_idx, src_token_idx)
 
             #
             # Async arrive accumulator buffer empty

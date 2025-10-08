@@ -97,22 +97,6 @@ class MPKScheduler:
             self.profiler.profile_event(event_name="Fetch-Task", event_type="end") 
 
     @cute.jit
-    def add_task(self, task_desc: cutlass.Uint32):
-        # register -> gmem task store with atomic add
-        mpk_queue_len = self.const_param.mpk_queue_len
-        thread_idx, _, _ = cute.arch.thread_idx()
-        task_produce_idx = self.kernel_param.mpk_task_produce_idx
-        task_queue = self.kernel_param.mpk_task_queue
-        if thread_idx == self.scheduler_warp_idx * 32:
-            self.profiler.profile_event(event_name="Add-Task", event_type="begin")
-            task_write_idx = inline_ptx.atomic_add(
-                task_produce_idx,
-                cutlass.Int32(1),
-            ) % cutlass.Int32(mpk_queue_len)
-            inline_ptx.st_flag_volatile(task_queue[task_write_idx, None], task_desc)
-            self.profiler.profile_event(event_name="Add-Task", event_type="end")
-
-    @cute.jit
     def sync_task(self):
         # smem -> register task load from worker warp
         thread_idx, _, _ = cute.arch.thread_idx()

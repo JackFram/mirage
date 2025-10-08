@@ -114,7 +114,6 @@ class TokenGatherTask:
         
         if thread_idx == 0:
             # update combine info tensor
-            # cute.printf("processing token-{}", token_idx)
             src_rank_idx = src_rank[token_idx]
             src_expert_idx = src_expert[token_idx]
             src_index_idx = src_index[token_idx]
