@@ -29,12 +29,14 @@ setup(
             depends=[
                 os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/tasks/blackwell/topk_softmax_sm100.cuh'),
                 os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/tasks/blackwell/w13_linear_sm100_mpk.cuh'),
+                os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/tasks/blackwell/silu_mul_sm100.cuh'),
                 os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/tasks/blackwell/utils.cuh'),
             ],
             define_macros=macros,
             include_dirs=[
                 os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/'),
                 os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/tasks/'),
+                os.path.join(this_dir, '../../../../include/mirage/persistent_kernel/tasks/common/'),
                 os.path.join(this_dir, '../../../../include'),
                 os.path.join(this_dir, '../../../../deps/cutlass/include'),
                 os.path.join(this_dir, '../../../../deps/cutlass/tools/util/include'),

@@ -12,12 +12,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+ // Put torch/extension.h first to avoid conflicts with pybind11
+#include <torch/extension.h>
+
 #include "runtime_header.h"
 #include "blackwell/task_header.cuh"
 #include "hopper/tma_2d.cuh"
+#include "common/common_header.cuh"
 #include "tma.cuh"
 #include <cuda_runtime.h>
-#include <torch/extension.h>
+
 
 #include <iostream>
 #include <cstdio>
@@ -339,6 +343,18 @@ void w13_linear_sm100_kernel(torch::Tensor input,
   }
 }
 
+// silu_mul_sm100
+template <typename T>
+__global__ __launch_bounds__(256,1) void silu_mul_sm100_wrapper(
+    void const *w1x_w3x_ptr, // Shape: B, TopK, 2*Inter, compact
+    ️void *output_ptr, // Shape: B, TopK, Inter
+    int batch_size,
+    int topk_size,
+    int inter_size) {
+
+  kernel::silu_mul_sm100_task_impl<T>(w1x_w3x_ptr, output_ptr, batch_size, topk_size, inter_size);
+}
+
 // w1x * w3x shape: B, K, 2*Iter (The result of [w1,w3] * x)
 // output shape: B, K, Iter (SiLU(w1x) * w3x)
 void silu_mul_sm100_kernel(torch::Tensor w1x_w3x,
@@ -364,7 +380,7 @@ void silu_mul_sm100_kernel(torch::Tensor w1x_w3x,
   dim3 grid_dim(grid_x, 1, 1);
   dim3 block_dim(BLOCK_SIZE, 1, 1);
 
-  kernel::silu_mul_sm100_task_impl<bfloat16><<<grid_dim,block_dim>>>(w1x_w3x_ptr, output_ptr, batch_size, topk_size, inter_size);
+  silu_mul_sm100_wrapper<bfloat16><<<grid_dim,block_dim>>>(w1x_w3x_ptr, output_ptr, batch_size, topk_size, inter_size);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess) {
     printf("CUDA kernel launch error: %s\n", cudaGetErrorString(err));

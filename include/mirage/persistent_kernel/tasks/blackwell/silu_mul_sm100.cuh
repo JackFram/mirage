@@ -3,13 +3,16 @@
  namespace kernel {
  
  template <typename T>
- __device__ __forceinline__ void silu_mul_sm100_task_impl(T const *w1x_w3x, // Shape: B, TopK, 2*Inter, compact
-                                                    T *output_ptr, // Shape: B, TopK, Inter
+ __device__ __forceinline__ void silu_mul_sm100_task_impl(void const *w1x_w3x_ptr, // Shape: B, TopK, 2*Inter, compact
+                                                    void *output_ptr, // Shape: B, TopK, Inter
                                                 int batch_size,
                                                 int topk_size,
                                                 int inter_size) { 
 
     // Each thread processes output_token_per_thread tokens
+
+    const T* w1x_w3x = static_cast<const T*>(w1x_w3x_ptr);
+    T* output = static_cast<T*>(output_ptr);
 
     int out_size = batch_size * topk_size * inter_size;
 
