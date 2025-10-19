@@ -15,12 +15,12 @@
 
     for (int i = threadIdx.x; i < out_size; i += blockDim.x) {
         // Get w1x_w3x[b, topk, :]
-        int batch_idx = i / (TopK_SIZE * INTER_SIZE);
-        int topk_idx = (i / INTER_SIZE) % TopK_SIZE;
-        int inter_idx = i % INTER_SIZE;
-        int w1_index = batch_idx * TopK_SIZE * 2 * INTER_SIZE + topk_idx * 2 * INTER_SIZE + inter_idx;
+        int batch_idx = i / (topk_size * inter_size);
+        int topk_idx = (i / inter_size) % topk_size;
+        int inter_idx = i % inter_size;
+        int w1_index = batch_idx * topk_size * 2 * inter_size + topk_idx * 2 * inter_size + inter_idx;
         T w1x = w1x_w3x[w1_index];
-        T w3x = w1x_w3x[w1_index + INTER_SIZE];
+        T w3x = w1x_w3x[w1_index + inter_size];
 
         // SiLU(w1x) * w3x
         T out = w1x / (1.0f + expf(-w1x)) *w3x;
