@@ -16,3 +16,4 @@
 #include "linear_sm100_mpk.cuh"
 #include "w13_linear_sm100.cuh"
 #include "topk_softmax_sm100.cuh"
+#include "silu_mul_sm100.cuh"

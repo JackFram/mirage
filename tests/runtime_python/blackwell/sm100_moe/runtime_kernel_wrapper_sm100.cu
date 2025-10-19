@@ -339,8 +339,41 @@ void w13_linear_sm100_kernel(torch::Tensor input,
   }
 }
 
+// w1x * w3x shape: B, K, 2*Iter (The result of [w1,w3] * x)
+// output shape: B, K, Iter (SiLU(w1x) * w3x)
+void silu_mul_sm100_kernel(torch::Tensor w1x_w3x,
+                     torch::Tensor output) {
+  assert(w1x_w3x.size(1) == output.size(1));
+  assert(w1x_w3x.size(2) == 2 * output.size(2));
+
+  void *output_ptr = output.data_ptr();
+  void *w1x_w3x_ptr = w1x_w3x.data_ptr();
+
+  int batch_size = output.size(0);
+  int topk_size = output.size(1);
+  int inter_size = output.size(2);
+
+  // output numel
+  int numel = output.numel();
+
+  constexpr int ELEMENT_PER_THREAD = 8;
+  constexpr int BLOCK_SIZE = 256;
+
+  int grid_x = (numel + BLOCK_SIZE * ELEMENT_PER_THREAD - 1) / (BLOCK_SIZE * ELEMENT_PER_THREAD);
+  // Same as the kernel in runtime_kernel_wrapper.cu
+  dim3 grid_dim(grid_x, 1, 1);
+  dim3 block_dim(BLOCK_SIZE, 1, 1);
+
+  kernel::silu_mul_sm100_task_impl<bfloat16><<<grid_dim,block_dim>>>(w1x_w3x_ptr, output_ptr, batch_size, topk_size, inter_size);
+  cudaError_t err = cudaDeviceSynchronize();
+  if (err != cudaSuccess) {
+    printf("CUDA kernel launch error: %s\n", cudaGetErrorString(err));
+  }
+}
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("topk_softmax_sm100", &topk_softmax_sm100_kernel, "TopK Softmax fused SM100");
   m.def("w13_linear_sm100", &w13_linear_sm100_kernel, "W13 Linear kernel SM100");
+  m.def("silu_mul_sm100", &silu_mul_sm100_kernel, "SiLU multiplication kernel SM100");
 }
