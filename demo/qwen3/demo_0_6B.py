@@ -9,19 +9,9 @@ import os
 # print limitation
 # torch.set_printoptions(threshold=2000)
 
-def grid_for_rmsnorm_linear_layer(size: int, use_cutlass_kernel: bool = True):
+def grid_for_rmsnorm_linear_layer(size):
     # 96 and 64 are enough to cover all Qwen3 model? Please update the method
     # if you meet any incompatibility.
-    if size % 64 == 0 and not use_cutlass_kernel:
-        # TODO(Wenqin): If we set OUTPUT_SIZE too much for PTX linear kernel,
-        # there is some regression.
-        return size // 64
-    if size / 96 > 400:
-        # TODO: An add-hoc workaround for linear kernel, both MPK ptx and
-        # cutlass version will output unexpect result (not same out put for
-        # same prompt) if the OUTPUT_SIZE is too big, try to figure it out.
-        assert size % 256 == 0, "FATAL: Linear layer size not support, it's {size}."
-        return size // 256
     if size % 96 == 0:
         return 96
     elif size % 64 == 0:
@@ -81,8 +71,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--model-path", type=str, default=None, help="Path to a local model (necessary for multi-GPU demo)")
     parser.add_argument(
-        "--model", type=str, default='Qwen/Qwen3-8B', help="Model path on hugging face"
+        "--model", type=str, default='Qwen/Qwen3-0.6B', help="Model path on hugging face"
     )
+    parser.add_argument("--num-workers", type=int, default=128, help="Number of workers in a persistent kernel")
+    parser.add_argument("--num-schedulers", type=int, default=20, help="Number of schedulers in a persistent kernel")
     parser.add_argument(
         "--no-use-cutlass-kernel",
         action="store_false",
@@ -128,10 +120,10 @@ if __name__ == "__main__":
             )
             tokenizer = AutoTokenizer.from_pretrained(args.model_path)
         else:
-            model = Qwen3ForCausalLM.from_pretrained(model_name, world_size, max_num_pages=args.max_num_pages, page_size=args.page_size).to("cuda")
+            model = Qwen3ForCausalLM.from_pretrained(model_name, world_size=1, max_num_pages=args.max_num_pages, page_size=args.page_size).to("cuda")
             tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    total_num_requests = 1 if not args.use_mirage else args.max_num_batched_requests
+    total_num_requests = args.max_num_batched_requests
     # get all model weight tensors
     tokens = torch.full((total_num_requests, args.max_seq_length), 0, dtype=torch.long, device="cuda")
 
@@ -153,8 +145,8 @@ if __name__ == "__main__":
                 plt.text(average_throughput*0.9, max(plt.ylim())*0.9, f'Average: {average_throughput:.2f}', color = 'red')
                 plt.show()
                 """
-    #question = "Can you please change x axis to start from 0"
-    #prompt = code_text + "\n" + question
+    # question = "Can you please change x axis to start from 0"
+    # prompt = code_text + "\n" + question
     messages = [
         {
             "role": "system",
@@ -165,6 +157,7 @@ if __name__ == "__main__":
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+    #text = "."
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
     model_inputs.input_ids = model_inputs.input_ids[:, :1] # decode only case
     for r in range(total_num_requests):
@@ -223,7 +216,11 @@ if __name__ == "__main__":
             spec_length=args.spec_length,
         )
             
-        num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
+        if args.num_workers is not None and args.num_schedulers is not None:
+            num_workers, num_schedulers = args.num_workers, args.num_schedulers
+        else:
+            num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
+            
         qo_indptr_buffer = torch.empty(
             args.max_num_batched_requests + 1, dtype=torch.int32, device="cuda")
         paged_kv_indptr_buffer = torch.empty(
@@ -232,6 +229,7 @@ if __name__ == "__main__":
             args.max_num_pages, dtype=torch.int32, device="cuda")
         paged_kv_last_page_len_buffer = torch.empty(
             args.max_num_batched_requests, dtype=torch.int32, device="cuda")
+        
         mpk = mi.PersistentKernel(
             mode="offline",
             world_size=world_size,
@@ -260,7 +258,7 @@ if __name__ == "__main__":
             profiler_tensor=profiler_tensor,
             trace_name=args.trace_name,
             spec_decode_config=spec_decode_config,
-            use_cutlass_kernel=args.use_cutlass_kernel
+            use_cutlass_kernel=args.use_cutlass_kernel,
         )
         
         if spec_decode_config and spec_decode_config.method == "promptlookup":
@@ -426,11 +424,12 @@ if __name__ == "__main__":
                 grid_dim=(mpk.max_num_batched_tokens, 1, 1),
                 block_dim=(128, 1, 1),
             )
+
             mpk.linear_layer(
                 input=rmsnorm_out,
                 weight=w_qkv,
                 output=attn_in,
-                grid_dim=(grid_for_rmsnorm_linear_layer(w_qkv.dim(0), args.use_cutlass_kernel), 1, 1),
+                grid_dim=(w_qkv.dim(0) // 64, 1, 1),
                 block_dim=(128, 1, 1),
             )
             #mpk.rmsnorm_linear_layer(
@@ -516,7 +515,7 @@ if __name__ == "__main__":
             w_up_proj = mpk.attach_input(
                 torch_tensor=layer.mlp.up_proj.weight, name=f"layer_{i}_up_proj"
             )
-            rmsnorm_num_tasks = grid_for_rmsnorm_linear_layer(w_gate_proj.dim(0) + w_up_proj.dim(0), args.use_cutlass_kernel)
+            rmsnorm_num_tasks = grid_for_rmsnorm_linear_layer(w_gate_proj.dim(0) + w_up_proj.dim(0))
             w_gatedup = mpk.shuffle_tensors(
                 inputs=[w_gate_proj, w_up_proj],
                 shuffled_dim=0,
@@ -591,7 +590,7 @@ if __name__ == "__main__":
             input=rmsnorm_out,
             weight=w_proj,
             output=argmax_in,
-            grid_dim=(mpk.num_workers, 1, 1),
+            grid_dim=(128, 1, 1),
             block_dim=(128, 1, 1),
         )
         #mpk.rmsnorm_linear_layer(
@@ -645,7 +644,6 @@ if __name__ == "__main__":
     warmup = 0
     output_len = 512
     if not args.use_mirage:
-        prompt_len= prompt_lengths[0].item()
         for cur_pos in range(prompt_len, prompt_len + output_len):
             step.fill_(cur_pos - 1)
             input_ids = tokens[:, prev_pos:cur_pos]
@@ -705,16 +703,14 @@ if __name__ == "__main__":
         run_time = starter.elapsed_time(ender)
 
         print("tokens.shape = ", tokens.shape)
+        # print(tokens)
         for r in range(total_num_requests):
             generated_ids = tokens[r, : step[r] + 1]
             response = tokenizer.decode(generated_ids, skip_special_tokens=True)
             print(response)
-        
-        if total_num_requests > 1:
-            print(f"Output length of each batch is same: {(step.max() == step.min()).item()}")
 
-        print("Prompt length {}, generate length {}, per-token latency (both prefill and decode): {:.3f} ms".format(
-              prompt_lengths[0], step.max().item() + 1 - prompt_lengths[0], run_time / (step.max().item() + 1)
+        print("Prompt length {}, generate length {}, per-token latency (both prefill and decode): {} ms".format(
+              prompt_lengths[0], step[0] + 1 - prompt_lengths[0], run_time / (step[0] + 1)
             )
         )
     if world_size > 1:
