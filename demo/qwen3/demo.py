@@ -44,8 +44,8 @@ def max_factor_leq_n(m: int, n: int) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-mirage", action="store_true", help="Use Mirage kernels")
-    parser.add_argument("--max-num-batched-tokens", default=16, type=int, help="Max number of tokens in a batch")
-    parser.add_argument("--max-num-batched-requests", default=16, type=int, help="Max number of requests in a batch")
+    parser.add_argument("--max-num-batched-tokens", default=1, type=int, help="Max number of tokens in a batch")
+    parser.add_argument("--max-num-batched-requests", default=1, type=int, help="Max number of requests in a batch")
     parser.add_argument("--page-size", default=4096, type=int, help="Page size")
     parser.add_argument("--max-num-pages", default=16, type=int, help="Max num pages")
     parser.add_argument("--output-dir", help="Output files directory")
@@ -224,6 +224,8 @@ if __name__ == "__main__":
         )
             
         num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
+        num_workers = 144
+        num_schedulers = 4
         qo_indptr_buffer = torch.empty(
             args.max_num_batched_requests + 1, dtype=torch.int32, device="cuda")
         paged_kv_indptr_buffer = torch.empty(
@@ -343,13 +345,13 @@ if __name__ == "__main__":
             io_category="cuda_tensor",
         )
         argmax_part_value = mpk.new_tensor(
-            dims=(args.max_num_batched_tokens, mpk.num_workers),
+            dims=(args.max_num_batched_tokens, 128),
             dtype=mi.bfloat16,
             name="argmax_part_value",
             io_category="cuda_tensor",
         )
         argmax_part_index = mpk.new_tensor(
-            dims=(args.max_num_batched_tokens, mpk.num_workers),
+            dims=(args.max_num_batched_tokens, 128),
             dtype=mi.int64,
             name="argmax_part_index",
             io_category="cuda_tensor",
@@ -491,7 +493,7 @@ if __name__ == "__main__":
                 torch_tensor=layer.mlp.up_proj.weight, name=f"layer_{i}_up_proj"
             )
             rmsnorm_num_tasks = grid_for_rmsnorm_linear_layer(w_gate_proj.dim(0) + w_up_proj.dim(0), args.use_cutlass_kernel)
-            rmsnorm_num_tasks = 128
+            # rmsnorm_num_tasks = 128
             w_gatedup = mpk.shuffle_tensors(
                 inputs=[w_gate_proj, w_up_proj],
                 shuffled_dim=0,
@@ -558,7 +560,7 @@ if __name__ == "__main__":
             input=rmsnorm_out,
             weight=w_proj,
             output=argmax_in,
-            grid_dim=(mpk.num_workers, 1, 1),
+            grid_dim=(128, 1, 1),
             block_dim=(128, 1, 1),
         )
         # add argmax layer
@@ -568,7 +570,7 @@ if __name__ == "__main__":
                                        1)
             argmax_reduce_grid_dim = (1, spec_decode_config.spec_length + 1, 1)
         else:
-            argmax_partial_grid_dim = (mpk.num_workers, 1, 1)
+            argmax_partial_grid_dim = (128, 1, 1)
             argmax_reduce_grid_dim = (1, 1, 1)
         mpk.argmax_partial_layer(
             input=argmax_in,
