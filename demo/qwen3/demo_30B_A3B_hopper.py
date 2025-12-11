@@ -175,10 +175,13 @@ if __name__ == "__main__":
         messages, tokenize=False, add_generation_prompt=True
     )
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+    model_inputs.input_ids = model_inputs.input_ids[:, :1] # decode only case
+    prompt_token = torch.randint(0, tokenizer.vocab_size, (total_num_requests, model_inputs.input_ids.shape[-1]), dtype=torch.long, device=model.device)
+    
     for r in range(total_num_requests):
         for i in range(model_inputs.input_ids.shape[-1]):
         # for i in range(args.max_seq_length):
-            tokens[r, i] = model_inputs.input_ids[0, i]
+            tokens[r, i] = prompt_token[r, i]
     prompt_lengths = torch.full((total_num_requests,), model_inputs.input_ids.shape[-1], dtype=torch.int, device=model.device)
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     dummy_x_for_device = torch.empty(1, dtype=torch.bfloat16, device=model.device)
