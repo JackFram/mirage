@@ -21,8 +21,14 @@ c10 = (192/255.0, 176/255.0, 213/255.0)
 
 ablation_hybrid_speed_up = [1.14, 1.07, 1.17, 1.18, 1.15]
 ablation_static_speed_up = [0.89, 0.75, 0.92, 1.06, 1.00]
+ablation_sglang = [45.653, 56.378, 79.37, 114.447, 129.809]
+ablation_static = [51.119, 75.195, 85.95, 107.773, 129.666]
+ablation_hybrid = [39.915, 52.219, 67.414, 96.829, 112.716]
 
-ablation_pipe = [1.15, 1.15, 1.14, 1.28, 1.29]
+ablation_pipe_speed_up = [1.15, 1.15, 1.14, 1.28, 1.29]
+ablation_pipe = [189.948, 190.551, 191.48, 194.592, 194.72]
+ablation_no_pipe = [219.468, 219.967, 219.922, 249.532, 250.269]
+ablation_cublas = [205.439, 205.445, 205.502, 206.381, 208.557]
 
 # miso = results['mirage']
 
@@ -44,9 +50,9 @@ def plot_moe():
 
     ax = axes[0][0]
 
-    b0 = ax.bar(np.array(x)-1*width, 1., width, color = c2, edgecolor="white")
-    b1 = ax.bar(np.array(x)-0*width, ablation_static_speed_up, width, color = c4, edgecolor = "white")
-    b2 = ax.bar(np.array(x)+1*width, ablation_hybrid_speed_up, width, color = c3, edgecolor = "white")
+    b0 = ax.bar(np.array(x)-1*width, ablation_sglang, width, color = c2, edgecolor="white")
+    b1 = ax.bar(np.array(x)-0*width, ablation_static, width, color = c4, edgecolor = "white")
+    b2 = ax.bar(np.array(x)+1*width, ablation_hybrid, width, color = c3, edgecolor = "white")
     # ax.set_xlabel(title, fontsize = 14)
     ax.set_xlim(-2.2*width, max(x) + 2.2*width)
     ax.tick_params(axis='both', which='major', labelsize=16)
@@ -68,7 +74,7 @@ def plot_moe():
 
     #plt.xticks(np.array(x) + 1.5 * width, ('GCN', 'GIN', 'GAT'))
     plt.setp(axes, xticks=[0,1,2,3,4], xticklabels=['BS=1', 'BS=2', 'BS=4', 'BS=8','BS=16'])
-    fig.text(-0.032, 0.5, 'Relative Performance', fontweight='bold', ha='left', va='center', rotation='vertical', fontsize=16)
+    fig.text(-0.032, 0.5, 'Runtime (us)', fontweight='bold', ha='left', va='center', rotation='vertical', fontsize=16)
 
     #fig.text(0.5, 0.02, 'Number of GPU devices', fontweight='bold', ha='center', va='bottom',  fontsize=18)
     # fig.legend([b0, b1, b2, b3, b4, b5], systems, loc = 'upper center', fontsize = 14, ncol = 6, bbox_to_anchor=(0.5,1.15))
@@ -89,20 +95,21 @@ def plot_pipe():
     width = 0.3
     x = [0, 1, 2, 3, 4]
     title =  "Qwen3-8B LM-Head GeMM Runtime"
-    systems = ['TGX-No-Pipe', 'TGX-Pipe']
+    systems = ['CUBLAS', 'TGX-No-Pipe', 'TGX-Pipe']
 
     fig, axes = plt.subplots(ncols = 1, nrows = 1, figsize=(8, 4), constrained_layout=True, squeeze=False)
     # fig.tight_layout()
 
     ax = axes[0][0]
 
-    b1 = ax.bar(np.array(x)-0.5*width, 1., width, color = c4, edgecolor = "white")
-    b2 = ax.bar(np.array(x)+0.5*width, ablation_pipe, width, color = c3, edgecolor = "white")
+    b0 = ax.bar(np.array(x)-1*width, ablation_cublas, width, color = c2, edgecolor="white")
+    b1 = ax.bar(np.array(x)-0*width, ablation_no_pipe, width, color = c4, edgecolor = "white")
+    b2 = ax.bar(np.array(x)+1*width, ablation_pipe, width, color = c3, edgecolor = "white")
     # ax.set_xlabel(title, fontsize = 14)
     ax.set_xlim(-2*width, max(x) + 2*width)
     ax.tick_params(axis='both', which='major', labelsize=16)
     #axes[i].set_xticklabels(['A','B','C','D','E','F','G'], fontsize=12)
-    autolabel(ax, b2, ablation_pipe, c3)
+    autolabel(ax, b2, ablation_pipe_speed_up, c3)
 
     #width2 = 0.23
     #b3 = axes[2].bar(np.array(x) - width2, np.array(ft[2]), width2, color = c10, edgecolor="white")
@@ -119,16 +126,16 @@ def plot_pipe():
 
     #plt.xticks(np.array(x) + 1.5 * width, ('GCN', 'GIN', 'GAT'))
     plt.setp(axes, xticks=[0,1,2,3,4], xticklabels=['BS=1', 'BS=2', 'BS=4', 'BS=8','BS=16'])
-    fig.text(-0.032, 0.5, 'Relative Performance', fontweight='bold', ha='left', va='center', rotation='vertical', fontsize=16)
+    fig.text(-0.032, 0.5, 'Runtime (us)', fontweight='bold', ha='left', va='center', rotation='vertical', fontsize=16)
 
     #fig.text(0.5, 0.02, 'Number of GPU devices', fontweight='bold', ha='center', va='bottom',  fontsize=18)
     # fig.legend([b0, b1, b2, b3, b4, b5], systems, loc = 'upper center', fontsize = 14, ncol = 6, bbox_to_anchor=(0.5,1.15))
-    fig.legend([b1, b2], systems, loc = 'upper center', fontsize = 16, ncol = 6, bbox_to_anchor=(0.5,1.15))
+    fig.legend([b0, b1, b2], systems, loc = 'upper center', fontsize = 16, ncol = 6, bbox_to_anchor=(0.5,1.15))
 
     #save to png
     plt.savefig('pipe_ablation.pdf', bbox_inches='tight', dpi=100)
     # plt.show()
     
 if __name__ == "__main__":
-    # plot_moe()
-    plot_pipe()
+    plot_moe()
+    # plot_pipe()
